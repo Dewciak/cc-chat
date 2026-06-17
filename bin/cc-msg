@@ -1,0 +1,204 @@
+#!/usr/bin/env node
+'use strict';
+// ClaudeChat CLI — talk between independent Claude Code sessions.
+//   cc-msg send <tab|all> <msg>   share info (no reply expected)
+//   cc-msg ask  <tab|all> <msg>   ask a question (reply expected)
+//   cc-msg fix  <tab|all> <msg>   report a problem in their project (act + report done)
+//   cc-msg sync <tab|all> <msg>   "I changed X, adapt your side" — cross-side hand-off
+//   cc-msg done <tab|all> <msg>   report completion (no reply expected)
+//   cc-msg status <msg>           publish what you're working on (shared board)
+//   cc-msg busy <msg>             mark mid-change (shared build/types may break); cc-msg ready clears
+//   cc-msg ready [msg]            clear the mid-change flag
+//   cc-msg who                    show what every session is working on
+//   cc-msg list                   live sessions with project paths
+//   cc-msg history [n]            recent traffic
+//   cc-msg name <handle>          give this session a short descriptive name
+//   cc-msg inbox                  print undelivered messages for this session
+//   cc-msg revive <tab> [msg]     reopen a CLOSED session (claude --resume) in a new terminal
+//   cc-msg whoami                 this session's name
+const path = require('path');
+const fs = require('fs');
+const bus = require(path.join(__dirname, '..', 'lib.js'));
+
+const [cmd, ...rest] = process.argv.slice(2);
+
+// Internal: background deliverer for revive (waits until the revived session is live, then delivers).
+if (cmd === '__deliver') {
+  const sid = rest[0];
+  const tmp = rest[1];
+  let msg = null;
+  try { msg = JSON.parse(fs.readFileSync(tmp, 'utf8')); } catch {}
+  const deadline = Date.now() + 120000; // resume + MCP load can be slow
+  const tick = () => {
+    const live = bus.listTabs().some((t) => t.sessionId === sid);
+    if (live || Date.now() > deadline) {
+      if (msg) bus.appendMessage(sid, msg);
+      try { fs.unlinkSync(tmp); } catch {}
+      process.exit(0);
+    }
+    setTimeout(tick, 1500);
+  };
+  tick();
+  return;
+}
+
+// CLAUDE_CODE_SESSION_ID is present in the Bash tool's environment and is the reliable identity.
+const SELF = process.env.CLAUDE_CODE_SESSION_ID || process.env.CC_SELF_SESSION || '';
+const FROM = (SELF && bus.labelOf(SELF)) || process.env.CC_TAB || 'unknown';
+const INTENTS = { send: 'info', info: 'info', ask: 'ask', fix: 'fix', done: 'done', sync: 'sync' };
+
+function die(msg) { process.stderr.write(msg + '\n'); process.exit(1); }
+
+// Open a new OS terminal that resumes a closed session's conversation.
+// Portable: macOS Terminal.app via osascript; otherwise print the command to run.
+function openTerminal(cwd, sid) {
+  const dir = String(cwd || process.env.HOME);
+  const shellCmd = `cd '${dir.replace(/'/g, `'\\''`)}' && claude --resume ${sid}`;
+  if (process.platform === 'darwin') {
+    const { execFileSync } = require('child_process');
+    const asc = shellCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    execFileSync('osascript', ['-e', `tell application "Terminal"\n  activate\n  do script "${asc}"\nend tell`],
+      { stdio: ['ignore', 'ignore', 'pipe'] });
+    return true;
+  }
+  process.stdout.write(`Run this in a new terminal to revive it:\n  ${shellCmd}\n`);
+  return false;
+}
+
+function scheduleDelivery(sid, msg) {
+  const { spawn } = require('child_process');
+  const tmp = path.join(bus.REVIVING, `${sid}.msg.json`);
+  try { fs.writeFileSync(tmp, JSON.stringify(msg)); } catch { return; }
+  const child = spawn(process.execPath, [__filename, '__deliver', sid, tmp], { detached: true, stdio: 'ignore' });
+  child.unref();
+}
+
+function reviveDead(d, msg) {
+  if (bus.recentlyRevived(d.sessionId)) {
+    if (msg) bus.appendMessage(d.sessionId, msg);
+    process.stdout.write(`"${d.label}" is already being reopened — message queued.\n`);
+    return;
+  }
+  bus.markReviving(d.sessionId);
+  const opened = openTerminal(d.cwd, d.sessionId);
+  if (msg) scheduleDelivery(d.sessionId, msg);
+  if (opened) process.stdout.write(`Reopening "${d.label}" (claude --resume) in a new terminal — it will receive the message once it's up.\n`);
+}
+
+function doSend(intent, target, text) {
+  if (!target || !text) die(`usage: cc-msg ${intent === 'info' ? 'send' : intent} <tab|all> <message>`);
+  const msg = { from: FROM, fromSession: SELF, intent, text, ts: bus.now() };
+  const targets = bus.resolveTargets(target, SELF);
+  if (targets.length) {
+    for (const t of targets) bus.appendMessage(t.sessionId, msg);
+    const names = targets.map((t) => t.label);
+    bus.appendLog({ from: FROM, to: names, intent, text, ts: bus.now() });
+    process.stdout.write(`[${intent}] sent to ${targets.length} session(s): ${names.map((n) => `"${n}"`).join(', ')}\n`);
+    return;
+  }
+  // Not live — is it a closed session we know how to revive?
+  const dead = bus.resolveDead(target, SELF);
+  if (!dead.length) {
+    const tabs = bus.listTabs().filter((t) => t.sessionId !== SELF).map((t) => t.label);
+    die(`No session matches "${target}". Live: ${tabs.join(', ') || '(none)'}`);
+  }
+  // Non-automatic: queue + tell the user to revive it explicitly.
+  bus.appendMessage(dead[0].sessionId, msg);
+  bus.appendLog({ from: FROM, to: [`${dead[0].label}(offline)`], intent, text, ts: bus.now() });
+  process.stdout.write(`"${dead[0].label}" is offline — message queued.\nReopen it with:  cc-msg revive ${dead[0].label}\n`);
+}
+
+function showBoard() {
+  const tabs = bus.listTabs();
+  if (!tabs.length) { process.stdout.write('No live sessions.\n'); return; }
+  for (const t of tabs) {
+    const me = t.sessionId === SELF ? ' (you)' : '';
+    const age = t.statusTs ? `  [${Math.round((bus.now() - t.statusTs) / 1000)}s ago]` : '';
+    const flag = t.unstable ? '! MID-CHANGE — ' : '';
+    process.stdout.write(`"${t.label}"${me}: ${flag}${t.status || '(no status)'}${age}\n`);
+  }
+}
+
+const key = (cmd || '').toLowerCase();
+
+if (key in INTENTS) {
+  doSend(INTENTS[key], rest[0], rest.slice(1).join(' ').trim());
+} else if (key === 'status') {
+  const text = rest.join(' ').trim();
+  if (!text) { showBoard(); }
+  else {
+    if (!SELF) die('Not inside a Claude Code session (CLAUDE_CODE_SESSION_ID unset).');
+    if (!bus.setStatus(SELF, text, false)) die('This session is not registered yet.');
+    bus.appendLog({ from: FROM, to: ['*board'], intent: 'status', text, ts: bus.now() });
+    process.stdout.write(`Status: ${text}\n`);
+  }
+} else if (key === 'busy') {
+  const text = rest.join(' ').trim() || 'mid-change';
+  if (!SELF) die('Not inside a Claude Code session.');
+  if (!bus.setStatus(SELF, text, true)) die('This session is not registered yet.');
+  bus.appendLog({ from: FROM, to: ['*board'], intent: 'busy', text, ts: bus.now() });
+  process.stdout.write(`Marked MID-CHANGE: ${text}\n`);
+} else if (key === 'ready' || key === 'stable') {
+  const text = rest.join(' ').trim() || 'stable';
+  if (!SELF) die('Not inside a Claude Code session.');
+  if (!bus.setStatus(SELF, text, false)) die('This session is not registered yet.');
+  bus.appendLog({ from: FROM, to: ['*board'], intent: 'ready', text, ts: bus.now() });
+  process.stdout.write(`Marked stable: ${text}\n`);
+} else if (key === 'who' || key === 'board') {
+  showBoard();
+} else if (key === 'list' || key === 'tabs') {
+  const tabs = bus.listTabs();
+  if (!tabs.length) process.stdout.write('No live sessions.\n');
+  for (const t of tabs) {
+    const age = Math.round((bus.now() - (t.ts || 0)) / 1000);
+    const me = t.sessionId === SELF ? '  <- this session' : '';
+    const st = t.status ? `  | ${t.unstable ? '! MID-CHANGE — ' : ''}${t.status}` : '';
+    process.stdout.write(`${t.label}\t${t.cwd}\t(seen ${age}s ago)${me}${st}\n`);
+  }
+} else if (key === 'history' || key === 'log') {
+  const rows = bus.readLog(parseInt(rest[0], 10) || 20);
+  if (!rows.length) process.stdout.write('No traffic yet.\n');
+  for (const r of rows) {
+    const when = r.ts ? new Date(r.ts).toLocaleTimeString() : '';
+    process.stdout.write(`${when} [${r.intent}] ${r.from} -> ${(r.to || []).join(',')}: ${r.text}\n`);
+  }
+} else if (key === 'name' || key === 'rename') {
+  const label = rest.join(' ').trim();
+  if (!label) die('usage: cc-msg name "<short-handle>"');
+  if (!SELF) die('Not inside a Claude Code session.');
+  const final = bus.setLabel(SELF, label);
+  if (!final) die('This session is not registered yet.');
+  process.stdout.write(`This session is now "${final}"${final !== label ? ` (taken — using "${final}")` : ''}.\n`);
+} else if (key === 'inbox') {
+  if (!SELF) die('Not inside a Claude Code session.');
+  const msgs = bus.drainInbox(SELF);
+  if (!msgs.length) process.stdout.write('Inbox empty.\n');
+  for (const m of msgs) {
+    const when = m.ts ? new Date(m.ts).toLocaleTimeString() : '';
+    process.stdout.write(`[${m.intent || 'info'}] from "${m.from}"${when ? ` at ${when}` : ''}: ${m.text}\n`);
+  }
+} else if (key === 'revive') {
+  const targetName = rest[0];
+  const text = rest.slice(1).join(' ').trim();
+  if (!targetName) die('usage: cc-msg revive <tab> [message]');
+  const dead = bus.resolveDead(targetName, SELF);
+  if (!dead.length) {
+    const arch = bus.listArchive().map((e) => e.label);
+    die(`No closed session matches "${targetName}". Archived: ${arch.join(', ') || '(none)'}`);
+  }
+  reviveDead(dead[0], text ? { from: FROM, fromSession: SELF, intent: 'info', text, ts: bus.now() } : null);
+} else if (key === 'whoami') {
+  process.stdout.write(`${FROM}${SELF ? ` (${SELF})` : ''}\n`);
+} else {
+  process.stdout.write(
+    'ClaudeChat — talk between Claude Code sessions\n' +
+    '  cc-msg send <tab|all> <msg>   share info            cc-msg ask  <tab|all> <msg>   ask (reply expected)\n' +
+    '  cc-msg fix  <tab|all> <msg>   report a problem      cc-msg sync <tab|all> <msg>   cross-side change\n' +
+    '  cc-msg done <tab|all> <msg>   report completion     cc-msg status <msg>           publish your focus\n' +
+    '  cc-msg busy <msg>             warn: mid-change      cc-msg ready [msg]            clear mid-change\n' +
+    '  cc-msg who                    who is doing what     cc-msg list                   live sessions + paths\n' +
+    '  cc-msg history [n]            recent traffic        cc-msg name <handle>          name this session\n' +
+    '  cc-msg inbox                  undelivered for you   cc-msg revive <tab> [msg]     reopen a closed session\n' +
+    '  cc-msg whoami                 your name\n'
+  );
+}
