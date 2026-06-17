@@ -50,11 +50,12 @@ let ctx =
   `CROSS-SESSION COORDINATION (ClaudeChat) is active. You are session "${label}" working in ${cwd}.\n` +
   `Other live sessions (name -> project, current focus):\n${otherList}\n` +
   `\n` +
-  `Your name is DYNAMIC: "<id>-<role>-<activity>" (e.g. "${label}"). The id stays fixed,\n` +
-  `the activity updates from your status. Address peers by their ID (the leading token) —\n` +
-  `it never changes; the rest is just a human-readable hint of what they're doing now.\n` +
-  `Announce your focus (this also updates your name): cc-msg status "<one-line focus>".\n` +
-  `Set role/activity explicitly if needed: cc-msg name "fe-checkout" (role f, activity checkout).\n` +
+  `Your name is "<id>-<role>-<activity>" (e.g. "${label}"). The id is fixed — peers address\n` +
+  `you by it. The activity = your MAIN / thematic task. Set it with cc-msg name, and change it\n` +
+  `ONLY when the main task changes — NOT for sub-steps ("change this section, then that"):\n` +
+  `  general front -> cc-msg name "fe-general"    admin front -> cc-msg name "fe-admin"\n` +
+  `  a feature     -> cc-msg name "fe-<feature>"  backend API -> cc-msg name "be-orders"\n` +
+  `Use cc-msg status "<one-line>" for granular progress — it shows on the board but does NOT rename you.\n` +
   `\n` +
   `DON'T PANIC over breakage that isn't yours. Before you stop / "fix" a build/type/test\n` +
   `failure, run: cc-msg who. If a peer is MID-CHANGE in the failing area, it's likely\n` +

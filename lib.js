@@ -139,22 +139,22 @@ function setLabel(sid, label) {
   return final;
 }
 
+// Granular progress for the board / `who`. Does NOT change the session NAME — the name
+// tracks the MAIN thematic task (set via applyName), not every micro status update.
 // unstable=true => "mid-change, shared build/types/tests may be transiently broken".
-// Also drives the DYNAMIC name: activity (slug of the status) is recomputed and folded
-// into the label "<id>-<role>-<activity>" so the name reflects what the session does now.
 function setStatus(sid, text, unstable) {
   const e = readEntry(regFile(sid));
   if (!e) return false;
-  e.status = text;             // full text (board / who)
+  e.status = text;
   e.unstable = !!unstable;
   e.statusTs = now();
-  e.activity = slugActivity(text); // short slug (label)
-  if (e.id) e.label = composeLabel(e);
   saveEntry(e);
   return true;
 }
 
-// Set/refine the role (b/f) and/or initial activity from a name argument, then recompose.
+// Set the NAME from the MAIN task: role (b/f) from a prefix or cwd, plus the thematic
+// activity. Label = "<id>-<role>-<activity>". Call this only when the MAIN task changes,
+// not for sub-steps. e.g. "fe-admin" -> "<id>-f-admin", "be-orders-api" -> "<id>-b-orders-api".
 function applyName(sid, text) {
   const e = readEntry(regFile(sid));
   if (!e) return null;
