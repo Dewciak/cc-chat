@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// ClaudeChat CLI — talk between independent Claude Code sessions.
+// cc-chat CLI — talk between independent Claude Code sessions.
 //   cc-msg send <tab|all> <msg>   share info (no reply expected)
 //   cc-msg ask  <tab|all> <msg>   ask a question (reply expected)
 //   cc-msg fix  <tab|all> <msg>   report a problem in their project (act + report done)
@@ -191,7 +191,7 @@ if (key in INTENTS) {
   process.stdout.write(`${FROM}${SELF ? ` (${SELF})` : ''}\n`);
 } else {
   process.stdout.write(
-    'ClaudeChat — talk between Claude Code sessions\n' +
+    'cc-chat — talk between Claude Code sessions\n' +
     '  cc-msg send <tab|all> <msg>   share info            cc-msg ask  <tab|all> <msg>   ask (reply expected)\n' +
     '  cc-msg fix  <tab|all> <msg>   report a problem      cc-msg sync <tab|all> <msg>   cross-side change\n' +
     '  cc-msg done <tab|all> <msg>   report completion     cc-msg status <msg>           publish your focus\n' +

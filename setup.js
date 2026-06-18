@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// ClaudeChat installer. Run: node setup.js
+// cc-chat installer. Run: node setup.js
 // - makes cc-msg + hooks executable
 // - links `cc-msg` onto your PATH (~/.local/bin)
 // - merges the 4 hooks (SessionStart / FileChanged / UserPromptSubmit / SessionEnd) and the
@@ -51,14 +51,14 @@ cfg.permissions.allow = cfg.permissions.allow || [];
 function hookCmd(file) { return `${NODE} ${path.join(REPO, 'hooks', file)}`; }
 function addHook(event, command, extra) {
   cfg.hooks[event] = cfg.hooks[event] || [];
-  const present = JSON.stringify(cfg.hooks[event]).includes('ClaudeChat') ||
+  const present = JSON.stringify(cfg.hooks[event]).includes('cc-chat') ||
     cfg.hooks[event].some((g) => (g.hooks || []).some((h) => (h.command || '').includes(path.join(REPO, 'hooks'))));
-  if (present) { log(`= ${event} already has a ClaudeChat hook (skipped)`); return; }
+  if (present) { log(`= ${event} already has a cc-chat hook (skipped)`); return; }
   cfg.hooks[event].push({ hooks: [Object.assign({ type: 'command', command }, extra || {})] });
   log(`✓ added ${event} hook`);
 }
 
-addHook('SessionStart', hookCmd('cc-msg-start.js'), { timeout: 10, statusMessage: 'ClaudeChat: registering session...' });
+addHook('SessionStart', hookCmd('cc-msg-start.js'), { timeout: 10, statusMessage: 'cc-chat: registering session...' });
 addHook('FileChanged', hookCmd('cc-msg-recv.js'), { timeout: 10, asyncRewake: true });
 addHook('UserPromptSubmit', hookCmd('cc-msg-board.js'), { timeout: 10 });
 addHook('SessionEnd', hookCmd('cc-msg-end.js'), { timeout: 10 });

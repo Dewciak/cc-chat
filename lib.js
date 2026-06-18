@@ -1,6 +1,6 @@
 'use strict';
-// ClaudeChat — shared engine for cross-session messaging between Claude Code instances.
-// Pure filesystem, no daemon. Storage under ~/.claude-chat/bus/:
+// cc-chat — shared engine for cross-session messaging between Claude Code instances.
+// Pure filesystem, no daemon. Storage under ~/.cc-chat/bus/:
 //   registry/<sessionId>.json   one entry per live session  { sessionId, label, cwd, ts, status, unstable, statusTs }
 //   inbox/<sessionId>.jsonl     append-only messages for that session
 //   inbox/<sessionId>.cursor    number of inbox lines already delivered
@@ -13,7 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = path.join(os.homedir(), '.claude-chat');
+const ROOT = path.join(os.homedir(), '.cc-chat');
 const BUS = path.join(ROOT, 'bus');
 const REG = path.join(BUS, 'registry');
 const INBOX = path.join(BUS, 'inbox');

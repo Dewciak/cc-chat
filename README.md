@@ -1,23 +1,23 @@
-# ClaudeChat
+# cc-chat
 
 **Let independent [Claude Code](https://docs.claude.com/en/docs/claude-code) sessions talk to each other.**
 
 Run several Claude Code sessions across terminal tabs/windows — each one a long-lived specialist on its own project — and let them coordinate **peer-to-peer**: share what they're working on, hand off cross-cutting changes, warn each other before breaking a shared build, and message a specific session directly. No daemon, no MCP server, no orchestrator. Just **Claude Code hooks + a tiny CLI + plain files**.
 
-> Each session is a normal, persistent `claude` session (keeps its full context). ClaudeChat is the wire between them — not a spawner. Unlike ephemeral subagents/teams that spin up and die per task, your sessions stay alive and accumulate domain knowledge; ClaudeChat just lets them coordinate when their work overlaps.
+> Each session is a normal, persistent `claude` session (keeps its full context). cc-chat is the wire between them — not a spawner. Unlike ephemeral subagents/teams that spin up and die per task, your sessions stay alive and accumulate domain knowledge; cc-chat just lets them coordinate when their work overlaps.
 
 ---
 
 ## Why
 
-When you run multiple Claude Code sessions on the same machine they're fully isolated — no shared context, no way for one to tell another "I changed the API, update your types" or "don't touch these files, I'm mid-migration". You end up being the message bus, copy-pasting between tabs. ClaudeChat removes you from that loop.
+When you run multiple Claude Code sessions on the same machine they're fully isolated — no shared context, no way for one to tell another "I changed the API, update your types" or "don't touch these files, I'm mid-migration". You end up being the message bus, copy-pasting between tabs. cc-chat removes you from that loop.
 
 ## How it works
 
 ```
    session A                              session B
    ─────────                              ─────────
-   cc-msg fix B "..."  ──►  ~/.claude-chat/bus/inbox/<B>.jsonl
+   cc-msg fix B "..."  ──►  ~/.cc-chat/bus/inbox/<B>.jsonl
                                   │  (file change)
                                   ▼
                           FileChanged hook (asyncRewake, exit 2)
@@ -34,15 +34,15 @@ Three Claude Code hooks do the work:
 - **UserPromptSubmit** — injects a live "who's working on what" status board (only when it changed).
 - **SessionEnd** — deregisters the session (inbox + archive are kept so it can be revived later).
 
-Everything is plain files under `~/.claude-chat/bus/`. No background process.
+Everything is plain files under `~/.cc-chat/bus/`. No background process.
 
 ## Install
 
 Requires **Node.js** and **Claude Code**.
 
 ```
-git clone https://github.com/Dewciak/ClaudeChat.git
-cd ClaudeChat
+git clone https://github.com/Dewciak/cc-chat.git
+cd cc-chat
 node setup.js          # or: ./install.sh
 ```
 
@@ -85,7 +85,7 @@ The SessionStart hook tells each session how to behave with incoming messages:
 
 ## Reviving closed sessions
 
-Claude Code keeps a session's transcript on disk even after you close it. If you message a session that's no longer live, ClaudeChat queues the message and tells you to reopen it:
+Claude Code keeps a session's transcript on disk even after you close it. If you message a session that's no longer live, cc-chat queues the message and tells you to reopen it:
 
 ```
 cc-msg revive be-orders          # opens a new terminal running `claude --resume <id>`
@@ -97,12 +97,12 @@ On macOS this opens Terminal.app; elsewhere it prints the `claude --resume` comm
 
 Waking is reliable for an **active** session (it gets the message immediately). A **fully-idle** session sitting at the prompt receives the message at its **next interaction** rather than starting a turn on its own — this is a Claude Code behavior, not a bug here. For most coordination flows this is fine.
 
-> Want guaranteed wake of idle sessions and one-click revive into clean tabs? That needs a terminal-emulator integration (e.g. WezTerm `cli send-text` / tmux `send-keys`). ClaudeChat keeps the core terminal-agnostic; such integrations are a natural extension.
+> Want guaranteed wake of idle sessions and one-click revive into clean tabs? That needs a terminal-emulator integration (e.g. WezTerm `cli send-text` / tmux `send-keys`). cc-chat keeps the core terminal-agnostic; such integrations are a natural extension.
 
 ## Data & uninstall
 
-- All state lives under `~/.claude-chat/bus/`. Delete it to reset.
-- To uninstall: remove the four ClaudeChat hook entries and the `Bash(cc-msg *)` permission from `~/.claude/settings.json` (restore the `.bak`), remove the `~/.local/bin/cc-msg` symlink, and delete `~/.claude-chat/`.
+- All state lives under `~/.cc-chat/bus/`. Delete it to reset.
+- To uninstall: remove the four cc-chat hook entries and the `Bash(cc-msg *)` permission from `~/.claude/settings.json` (restore the `.bak`), remove the `~/.local/bin/cc-msg` symlink, and delete `~/.cc-chat/`.
 
 ## License
 

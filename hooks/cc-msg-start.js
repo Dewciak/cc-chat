@@ -47,7 +47,7 @@ const otherList = others.length
   : '  (none yet — peers register as they start)';
 
 let ctx =
-  `CROSS-SESSION COORDINATION (ClaudeChat) is active. You are session "${label}" working in ${cwd}.\n` +
+  `CROSS-SESSION COORDINATION (cc-chat) is active. You are session "${label}" working in ${cwd}.\n` +
   `Other live sessions (name -> project, current focus):\n${otherList}\n` +
   `\n` +
   `Your name is "<id>-<role>-<activity>" (e.g. "${label}"). The id is fixed — peers address you by it.\n` +
