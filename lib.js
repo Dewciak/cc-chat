@@ -175,13 +175,50 @@ function applyName(sid, text) {
   return e.label;
 }
 
-// Resolve a name to LIVE sessions. "all"/"*" => everyone except excludeSid;
-// else exact label, then substring, then sessionId prefix.
+// Project key for a working dir: the nearest ancestor containing a `.git` (repo
+// root), so a backend in /repo/api and a frontend in /repo/web map to the same
+// project. Falls back to the resolved cwd if no .git is found. Used to keep
+// broadcasts ("all") from waking sessions in UNRELATED projects.
+const _projCache = new Map();
+function projectKey(cwd) {
+  const start = path.resolve(cwd || '.');
+  if (_projCache.has(start)) return _projCache.get(start);
+  let dir = start;
+  for (let i = 0; i < 20 && dir && dir !== path.dirname(dir); i++) {
+    try { if (fs.existsSync(path.join(dir, '.git'))) { _projCache.set(start, dir); return dir; } } catch {}
+    dir = path.dirname(dir);
+  }
+  _projCache.set(start, start);
+  return start;
+}
+
+// Resolve a name to LIVE sessions.
+//   "all" / "@all" / "*"                         => every session IN THE SENDER'S PROJECT
+//   "everyone" / "global" / "all-projects"       => every session (cross-project)
+//   "proj:<name>" / "project:<name>"             => every session whose project matches <name>
+//   else exact label, then substring, then sessionId prefix (may cross projects — addressing
+//   one specific session by id is always allowed).
 function resolveTargets(name, excludeSid) {
   const tabs = listTabs().filter((t) => t.sessionId !== excludeSid);
   if (!name) return [];
   const n = String(name).toLowerCase();
-  if (n === 'all' || n === '@all' || n === '*') return tabs;
+  if (n === 'everyone' || n === 'global' || n === 'all-projects' || n === '*global' || n === 'all!') return tabs;
+  if (n.startsWith('proj:') || n.startsWith('project:')) {
+    const key = n.replace(/^proj(ect)?:/, '').trim();
+    if (!key) return [];
+    return tabs.filter((t) => {
+      const b = path.basename(projectKey(t.cwd || '')).toLowerCase();
+      return b === key || b.includes(key);
+    });
+  }
+  if (n === 'all' || n === '@all' || n === '*') {
+    const self = excludeSid ? readEntry(regFile(excludeSid)) : null;
+    if (self && self.cwd) {
+      const pk = projectKey(self.cwd);
+      return tabs.filter((t) => projectKey(t.cwd) === pk);
+    }
+    return tabs; // sender unknown -> don't silently drop
+  }
   let m = tabs.filter((t) => (t.label || '').toLowerCase() === n);
   if (m.length) return m;
   m = tabs.filter((t) => (t.label || '').toLowerCase().includes(n));
@@ -258,5 +295,5 @@ module.exports = {
   defaultBase, listTabs, saveEntry, touch, removeEntry, labelOf, uniqueLabel, setLabel,
   setStatus, applyName, resolveTargets, appendMessage, drainInbox, appendLog, readLog,
   listArchive, resolveDead, recentlyRevived, markReviving,
-  shortId, roleFor, slugActivity, composeLabel,
+  shortId, roleFor, slugActivity, composeLabel, projectKey,
 };

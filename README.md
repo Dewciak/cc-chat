@@ -46,7 +46,7 @@ cd cc-chat
 node setup.js          # or: ./install.sh
 ```
 
-The installer links `cc-msg` onto your PATH (`~/.local/bin`), and **merges** the four hooks + a `Bash(cc-msg *)` permission into `~/.claude/settings.json` (idempotent, makes a `.bak` first — it never clobbers your existing config).
+The installer links `cc-msg` **and `cc-bus`** onto your PATH (`~/.local/bin`), **merges** the four hooks + a `Bash(cc-msg *)` permission into `~/.claude/settings.json` (idempotent, makes a `.bak` first — it never clobbers your existing config), and — if `~/.vscode/extensions` exists — symlinks the optional [cc-bus VS Code integration](integrations/).
 
 **Restart your Claude Code sessions** afterwards — each one registers on start. Make sure `~/.local/bin` is on your `PATH`.
 
@@ -69,9 +69,18 @@ From inside any Claude Code session (the agent runs these via Bash; you can too)
 | `cc-msg name <handle>` | give this session a short descriptive name |
 | `cc-msg inbox` | undelivered messages for this session |
 | `cc-msg revive <tab> [msg]` | reopen a **closed** session (`claude --resume`) in a new terminal |
+| `cc-msg spawn [--resume sid] "prompt"` | open a **new** claude tab, seeded with a prompt (needs the [cc-bus VS Code integration](integrations/)) |
 | `cc-msg whoami` | this session's name |
 
-`<tab>` is matched by exact name → substring → session-id prefix. `all` broadcasts to every other live session.
+`<tab>` is matched by exact name → substring → session-id prefix.
+
+**Broadcast scope.** `all` (and `*`, `@all`) reaches only sessions **in the sender's project** (nearest `.git` root) — so a broadcast never wakes sessions in unrelated repos. Other forms:
+
+- `cc-msg send everyone "..."` — every live session, across all projects (rare; use sparingly).
+- `cc-msg send proj:<name> "..."` — every session whose project (git-root basename) matches `<name>`.
+- Addressing one session by its id always works, across projects.
+
+The **status board** injected on each prompt is likewise scoped to same-project peers, and only re-appears when a peer's name/status/mid-change flag actually changes (not on every heartbeat).
 
 ### The behavior protocol
 
@@ -93,16 +102,23 @@ cc-msg revive be-orders          # opens a new terminal running `claude --resume
 
 On macOS this opens Terminal.app; elsewhere it prints the `claude --resume` command to run. The queued message is delivered once the revived session is up. (This is deliberately **not** automatic — you trigger it.)
 
+## Integrations
+
+The core stays terminal-agnostic. Optional integrations live under [`integrations/`](integrations/):
+
+- **`cc-bus`** — a live, colored dashboard of the whole bus (legend of sessions + chat stream). Interactive: press `s` to ask everyone for a status, `m` to broadcast a message, `t` to switch which project you're broadcasting to. You send AS `operator` (the human at the dashboard); sessions reply with `cc-msg send operator "..."`, which shows up live. Installed onto your PATH by `setup.js` — just run `cc-bus`.
+- **`vscode-cc-bus-waker`** — a VS Code extension that (1) **wakes idle Claude terminals** in the window when a message arrives (works around the limitation below), and (2) handles **`cc-msg spawn`** by opening a new `claude` tab and seeding it with a prompt. It only touches sessions in its own window, skips busy/mid-generation sessions and the terminal you're typing in. Symlinked into `~/.vscode/extensions` by `setup.js`; run *Developer: Reload Window* to activate.
+
 ## Known limitation
 
-Waking is reliable for an **active** session (it gets the message immediately). A **fully-idle** session sitting at the prompt receives the message at its **next interaction** rather than starting a turn on its own — this is a Claude Code behavior, not a bug here. For most coordination flows this is fine.
+Out of the box, waking is reliable for an **active** session (it gets the message immediately). A **fully-idle** session sitting at the prompt receives the message at its **next interaction** rather than starting a turn on its own — this is a Claude Code behavior, not a bug here.
 
-> Want guaranteed wake of idle sessions and one-click revive into clean tabs? That needs a terminal-emulator integration (e.g. WezTerm `cli send-text` / tmux `send-keys`). cc-chat keeps the core terminal-agnostic; such integrations are a natural extension.
+> Want guaranteed wake of idle sessions in VS Code? Install the `vscode-cc-bus-waker` integration above. For WezTerm/tmux the same idea works via `cli send-text` / `send-keys`.
 
 ## Data & uninstall
 
 - All state lives under `~/.cc-chat/bus/`. Delete it to reset.
-- To uninstall: remove the four cc-chat hook entries and the `Bash(cc-msg *)` permission from `~/.claude/settings.json` (restore the `.bak`), remove the `~/.local/bin/cc-msg` symlink, and delete `~/.cc-chat/`.
+- To uninstall: remove the four cc-chat hook entries and the `Bash(cc-msg *)` permission from `~/.claude/settings.json` (restore the `.bak`), remove the `~/.local/bin/cc-msg` and `~/.local/bin/cc-bus` symlinks, remove the `~/.vscode/extensions/cc-bus-waker` symlink (if installed), and delete `~/.cc-chat/`.
 
 ## License
 

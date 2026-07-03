@@ -14,15 +14,23 @@ if (!sid) { process.exit(0); }
 const existing = bus.readEntry(bus.regFile(sid));
 if (!existing) {
   const cwd = input.cwd || process.env.HOME;
-  const e = { sessionId: sid, cwd, id: bus.shortId(sid), role: bus.roleFor(cwd), activity: bus.slugActivity(bus.defaultBase(cwd)) };
+  const e = { sessionId: sid, cwd, pid: process.ppid, id: bus.shortId(sid), role: bus.roleFor(cwd), activity: bus.slugActivity(bus.defaultBase(cwd)) };
   e.label = bus.composeLabel(e);
   bus.saveEntry(e);
 } else {
   bus.touch(sid);
 }
 
-const peers = bus.listTabs().filter((t) => t.sessionId !== sid);
-const sig = JSON.stringify(peers.map((p) => ({ l: p.label, s: p.status || '', u: !!p.unstable, t: p.statusTs || 0 }))
+// Show only SAME-PROJECT peers: a session cares about peers sharing its repo (shared
+// build/types/tests, the don't-panic case). This also stops status churn in UNRELATED
+// projects from re-injecting the board on every prompt. Project key = nearest .git ancestor.
+const selfEntry = bus.readEntry(bus.regFile(sid));
+const selfProj = selfEntry ? bus.projectKey(selfEntry.cwd || '') : null;
+const peers = bus.listTabs().filter((t) =>
+  t.sessionId !== sid && (!selfProj || bus.projectKey(t.cwd || '') === selfProj));
+// Signature excludes volatile fields (statusTs/age): re-inject only when a peer's label,
+// status TEXT, or mid-change flag actually changes — not on heartbeats.
+const sig = JSON.stringify(peers.map((p) => ({ l: p.label, s: p.status || '', u: !!p.unstable }))
   .sort((a, b) => (a.l < b.l ? -1 : 1)));
 
 let prev = '';

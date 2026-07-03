@@ -1,0 +1,305 @@
+#!/usr/bin/env node
+'use strict';
+// cc-bus — live visual view of the cc-chat message bus.
+//   Tails ~/.cc-chat/bus/log.jsonl and renders it as a colored chat stream, with a legend
+//   of the live sessions (from the registry) on top. Interactive: broadcast to sessions AS
+//   the human "operator" at the dashboard.
+//
+// Usage:
+//   cc-bus                 legend + last 40 messages, then follow live
+//   cc-bus -n 100          show last 100 messages first
+//   cc-bus --no-follow     print once and exit (no live tail)
+//   cc-bus --no-ambient    hide ambient noise (status/busy/ready)
+//   cc-bus --only fix,ask  show only these intents (comma list)
+//   cc-bus --plain         no colors (pipe-friendly)
+//
+// Interactive keys (live TTY): [s] ask everyone for status  [m] compose a message
+//   [t] switch send target (all projects / one project)  [q] quit
+// Sessions reply to the dashboard with:  cc-msg send operator "..."
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const readline = require('readline');
+const cp = require('child_process');
+
+const BUS = path.join(os.homedir(), '.cc-chat', 'bus');
+const LOG = path.join(BUS, 'log.jsonl');
+const REG = path.join(BUS, 'registry');
+
+// nearest ancestor dir with a .git (repo root); fallback to the cwd itself
+const _projCache = new Map();
+function projectKey(cwd) {
+  const start = path.resolve(cwd || '.');
+  if (_projCache.has(start)) return _projCache.get(start);
+  let dir = start;
+  for (let i = 0; i < 20 && dir && dir !== path.dirname(dir); i++) {
+    try { if (fs.existsSync(path.join(dir, '.git'))) { _projCache.set(start, dir); return dir; } } catch {}
+    dir = path.dirname(dir);
+  }
+  _projCache.set(start, start);
+  return start;
+}
+const projOf = (cwd) => path.basename(projectKey(cwd || ''));
+
+// cc-msg on PATH (~/.local/bin), falling back to the repo bin
+function resolveCcMsg() {
+  const cands = [path.join(os.homedir(), '.local', 'bin', 'cc-msg'), path.join(__dirname, '..', 'bin', 'cc-msg')];
+  for (const c of cands) { try { if (fs.existsSync(c)) return c; } catch {} }
+  return 'cc-msg';
+}
+const CCMSG = resolveCcMsg();
+
+// ---- args ----
+const argv = process.argv.slice(2);
+const has = (f) => argv.includes(f);
+const val = (f, d) => { const i = argv.indexOf(f); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
+const FOLLOW = !has('--no-follow');
+const AMBIENT = !has('--no-ambient');
+const TAIL = parseInt(val('-n', '40'), 10) || 40;
+const PLAIN = has('--plain') || !process.stdout.isTTY && !FOLLOW;
+const ONLY = (val('--only', '') || '').split(',').map(s => s.trim()).filter(Boolean);
+
+// ---- color ----
+const ESC = (s) => PLAIN ? '' : `\x1b[${s}m`;
+const RESET = ESC('0');
+const BOLD = ESC('1');
+const DIM = ESC('2');
+const fg = (n) => PLAIN ? '' : `\x1b[38;5;${n}m`;
+const PALETTE = [38, 208, 113, 170, 220, 75, 204, 150, 180, 117, 215, 141, 43, 209, 81, 165];
+const colorCache = new Map();
+function tabColor(id) {
+  if (colorCache.has(id)) return colorCache.get(id);
+  let h = 0;
+  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  let idx = h % PALETTE.length;
+  const used = new Set(colorCache.values());
+  let tries = 0;
+  while (used.has(PALETTE[idx]) && tries < PALETTE.length) { idx = (idx + 1) % PALETTE.length; tries++; }
+  const c = PALETTE[idx];
+  colorCache.set(id, c);
+  return c;
+}
+const idOf = (label) => (label || '?').split('-')[0];
+const cName = (label) => {
+  if (!label) return '?';
+  if (label.startsWith('*')) return `${DIM}all${RESET}`;
+  // colour keyed by the stable 4-char id, but DISPLAY the full descriptive name
+  return `${fg(tabColor(idOf(label)))}${BOLD}${label}${RESET}`;
+};
+
+// ---- intents ----
+const INTENT = {
+  fix:    { tag: 'FIX  ', col: 196 },
+  ask:    { tag: 'ASK  ', col: 220 },
+  sync:   { tag: 'SYNC ', col: 75 },
+  done:   { tag: 'DONE ', col: 113 },
+  send:   { tag: 'SEND ', col: 250 },
+  info:   { tag: 'INFO ', col: 246 },
+  status: { tag: 'STAT ', col: 109 },
+  busy:   { tag: 'BUSY ', col: 202 },
+  ready:  { tag: 'READY', col: 113 },
+};
+const AMBIENT_INTENTS = new Set(['status', 'busy', 'ready']);
+
+// ---- helpers ----
+function fmtTime(ts) {
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function wrap(text, width, indent) {
+  const words = String(text).replace(/\s+/g, ' ').trim().split(' ');
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    if (cur && (cur.length + 1 + w.length) > width) { lines.push(cur); cur = ''; }
+    cur = cur ? cur + ' ' + w : w;
+  }
+  if (cur) lines.push(cur);
+  return lines.map((l, i) => (i === 0 ? '' : indent) + l).join('\n');
+}
+
+function renderMsg(m) {
+  if (!m || !m.intent) return null;
+  if (ONLY.length && !ONLY.includes(m.intent)) return null;
+  if (!AMBIENT && AMBIENT_INTENTS.has(m.intent)) return null;
+  const meta = INTENT[m.intent] || { tag: (m.intent || '?').toUpperCase().padEnd(5), col: 250 };
+  const time = `${DIM}${fmtTime(m.ts)}${RESET}`;
+  const badge = `${fg(meta.col)}${BOLD}${meta.tag}${RESET}`;
+  const from = cName(m.from);
+  const toArr = m.to || [];
+  const tos = toArr.length > 3
+    ? `${DIM}${toArr.length} sessions${RESET}`
+    : toArr.map(cName).join(`${DIM}, ${RESET}`);
+  const arrow = `${DIM}->${RESET}`;
+  const head = `${time}  ${badge}  ${from} ${arrow} ${tos}`;
+  const width = Math.max(40, (process.stdout.columns || 100) - 6);
+  const indent = '    ';
+  const body = `${indent}${wrap(m.text || '', width - indent.length, indent)}`;
+  return `${head}\n${body}\n`;
+}
+
+function readRegistry() {
+  let tabs = [];
+  try {
+    for (const f of fs.readdirSync(REG)) {
+      if (!f.endsWith('.json')) continue;
+      try { tabs.push(JSON.parse(fs.readFileSync(path.join(REG, f), 'utf8'))); } catch {}
+    }
+  } catch {}
+  return tabs.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+function renderLegend() {
+  const tabs = readRegistry();
+  const now = Date.now();
+  const lines = [];
+  const bar = `${DIM}${'─'.repeat(Math.min(78, (process.stdout.columns || 80) - 2))}${RESET}`;
+  lines.push('');
+  lines.push(`${BOLD}cc-bus${RESET}   ${DIM}${tabs.length} live session(s)${RESET}`);
+  lines.push(bar);
+  for (const t of tabs) {
+    const id = t.id || idOf(t.label);
+    const swatch = `${fg(tabColor(id))}██${RESET}`;
+    const idc = `${fg(tabColor(id))}${BOLD}${id}${RESET}`;
+    const proj = path.basename(t.cwd || '');
+    const ageMin = Math.round((now - (t.statusTs || t.ts || now)) / 60000);
+    const unstable = t.unstable ? `${fg(202)}${BOLD}[MID-CHANGE]${RESET} ` : '';
+    const status = (t.status || `${DIM}—${RESET}`);
+    const statusShort = t.status && t.status.length > 70 ? t.status.slice(0, 69) + '…' : status;
+    lines.push(`  ${swatch} ${idc}  ${DIM}${proj}${RESET}  ${unstable}${statusShort}  ${DIM}(${ageMin}m)${RESET}`);
+  }
+  lines.push(bar);
+  return lines.join('\n');
+}
+
+// ---- initial render ----
+function readAllLines() {
+  let raw = '';
+  try { raw = fs.readFileSync(LOG, 'utf8'); } catch { return []; }
+  return raw.split('\n').filter(Boolean);
+}
+
+console.log(renderLegend());
+for (const l of readAllLines().slice(-TAIL)) {
+  try { const out = renderMsg(JSON.parse(l)); if (out) console.log(out); } catch {}
+}
+
+if (!FOLLOW) process.exit(0);
+
+const INTERACTIVE = !!process.stdin.isTTY;
+
+// ---- send target: which project the operator's broadcasts reach ----
+function knownProjects() {
+  const set = new Set();
+  for (const t of readRegistry()) { const p = projOf(t.cwd); if (p) set.add(p); }
+  return [...set].sort();
+}
+let target = 'all';
+{
+  const launch = projOf(process.cwd());
+  if (launch && knownProjects().includes(launch)) target = launch;
+}
+function targetCycle() { return ['all', ...knownProjects()]; }
+function cycleTarget() {
+  const cyc = targetCycle();
+  const i = cyc.indexOf(target);
+  target = cyc[(i + 1) % cyc.length];
+  printHint();
+}
+function printHint() {
+  if (!INTERACTIVE) { console.log(`${DIM}── live ── (Ctrl+C to quit)${RESET}`); return; }
+  const tgt = target === 'all' ? `${fg(208)}all projects${RESET}` : `${fg(113)}${target}${RESET}`;
+  console.log(
+    `${DIM}── live ──  ${RESET}${BOLD}[s]${RESET}${DIM} statuses  ${RESET}${BOLD}[m]${RESET}${DIM} message  ` +
+    `${RESET}${BOLD}[t]${RESET}${DIM} target: ${RESET}${tgt}${DIM}  ${RESET}${BOLD}[q]${RESET}${DIM} quit${RESET}`
+  );
+}
+printHint();
+
+let composing = false;
+
+// ---- follow: tail appended bytes ----
+let offset = 0;
+try { offset = fs.statSync(LOG).size; } catch {}
+
+function drain() {
+  if (composing) return;
+  let stat;
+  try { stat = fs.statSync(LOG); } catch { return; }
+  if (stat.size < offset) offset = 0; // truncated/rotated
+  if (stat.size === offset) return;
+  const stream = fs.createReadStream(LOG, { start: offset, end: stat.size });
+  let buf = '';
+  stream.on('data', (d) => { buf += d.toString('utf8'); });
+  stream.on('end', () => {
+    offset = stat.size;
+    for (const l of buf.split('\n').filter(Boolean)) {
+      try { const out = renderMsg(JSON.parse(l)); if (out) console.log(out); } catch {}
+    }
+  });
+  stream.on('error', () => {});
+}
+
+let timer = null;
+function schedule() { clearTimeout(timer); timer = setTimeout(drain, 120); }
+try { fs.watch(LOG, { persistent: true }, schedule); }
+catch { setInterval(drain, 1000); }
+setInterval(drain, 2000); // safety poll
+
+const bye = () => {
+  try { if (INTERACTIVE) process.stdin.setRawMode(false); } catch {}
+  console.log(`\n${DIM}cc-bus closed.${RESET}`);
+  process.exit(0);
+};
+process.on('SIGINT', bye);
+process.on('SIGTERM', bye);
+
+// ---- interactive: broadcast to sessions AS the human "operator" at the dashboard ----
+// Identity = "operator": clear the session env so cc-msg falls back to CC_TAB=operator.
+// Uses intent "ask" (reply expected). Sessions answer with: cc-msg send operator "...".
+function sendAsOperator(text, label) {
+  const env = Object.assign({}, process.env, { CC_TAB: 'operator' });
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.CC_SELF_SESSION;
+  const dest = target === 'all' ? 'everyone' : `proj:${target}`;
+  cp.execFile(CCMSG, ['ask', dest, text], { env }, (err, stdout) => {
+    if (err) { console.log(`${fg(196)}→ send error: ${err.message}${RESET}`); return; }
+    const m = (stdout || '').match(/sent to (\d+)/);
+    const n = m ? m[1] : '0';
+    const where = target === 'all' ? 'all projects' : target;
+    console.log(`${DIM}→ ${label} — ${n} session(s) (${where}), waiting for replies${RESET}`);
+  });
+}
+const REPLY = 'Reply briefly: cc-msg send operator "<answer>" (shows on the dashboard). Also refresh your cc-msg status.';
+function askStatuses() {
+  sendAsOperator(`[OPERATOR] Status check — how is it going, who is still working? ${REPLY}`, 'status request');
+}
+function compose() {
+  composing = true;
+  try { process.stdin.setRawMode(false); } catch {}
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  rl.question(`${BOLD}✉ to all (Enter sends, empty cancels): ${RESET}`, (answer) => {
+    rl.close();
+    const text = String(answer || '').trim();
+    if (text) sendAsOperator(`[OPERATOR] ${text} — ${REPLY}`, 'message sent');
+    else console.log(`${DIM}→ cancelled${RESET}`);
+    composing = false;
+    try { process.stdin.setRawMode(true); } catch {}
+    process.stdin.resume();
+  });
+}
+
+if (INTERACTIVE) {
+  try { process.stdin.setRawMode(true); } catch {}
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (key) => {
+    if (composing) return;
+    if (key === '\u0003' || key === 'q' || key === 'Q') return bye();
+    if (key === 's' || key === 'S') return askStatuses();
+    if (key === 'm' || key === 'M') return compose();
+    if (key === 't' || key === 'T') return cycleTarget();
+  });
+}

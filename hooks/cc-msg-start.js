@@ -20,6 +20,7 @@ const prior = bus.readEntry(bus.regFile(sid)) || bus.listArchive().find((e) => e
 const ccTab = process.env.CC_TAB && process.env.CC_TAB.trim();
 const entry = {
   sessionId: sid, cwd,
+  pid: process.ppid,   // the claude process (parent of this hook) — lets terminal integrations match a session to its terminal
   id: bus.shortId(sid),
   role: bus.roleFor(cwd, ccTab) || (prior && prior.role) || '',
   activity: bus.slugActivity(ccTab || (prior && prior.activity) || bus.defaultBase(cwd)),
@@ -50,10 +51,12 @@ let ctx =
   `CROSS-SESSION COORDINATION (cc-chat) is active. You are session "${label}" working in ${cwd}.\n` +
   `Other live sessions (name -> project, current focus):\n${otherList}\n` +
   `\n` +
-  `Your name is "<id>-<role>-<activity>" (e.g. "${label}"). The id is fixed — peers address you by it.\n` +
-  `The activity AUTO-FOLLOWS your cc-msg status, so sessions in the same repo differ by what they DO.\n` +
-  `Just keep posting cc-msg status "<one-line focus>" and your name tracks it automatically.\n` +
-  `To PIN a fixed name (stop auto-updates) use cc-msg name "fe-admin" / "be-orders".\n` +
+  `Your id is "${label.split('-')[0]}" (fixed — peers address you by it, e.g. cc-msg send ${label.split('-')[0]} "...").\n` +
+  `NAME YOURSELF as soon as you understand your task — do it on your first turn. Pick a SHORT,\n` +
+  `human-readable name: 2-3 words, kebab-case, the THEME of your work — NOT a sentence, NOT a status.\n` +
+  `Good: "zoom-migration", "video-gallery", "orders-api". Bad: "phase-2-done-pipeline" (that's a status).\n` +
+  `  cc-msg name "<2-3 words>"\n` +
+  `This PINS your name so the board stays readable. Re-name only when your main topic changes.\n` +
   `\n` +
   `DON'T PANIC over breakage that isn't yours. Before you stop / "fix" a build/type/test\n` +
   `failure, run: cc-msg who. If a peer is MID-CHANGE in the failing area, it's likely\n` +
@@ -63,6 +66,10 @@ let ctx =
   `Coordinate via Bash:\n` +
   `  cc-msg fix <tab> "problem + where"  cc-msg ask <tab> "question"  cc-msg sync <tab> "I changed X; adapt Y"\n` +
   `  cc-msg send <tab> "info"            cc-msg done <tab> "what you did"   cc-msg who / list / history\n` +
+  `  cc-msg spawn [--resume <sid>] "<prompt>"  open a NEW claude tab (needs the cc-bus VS Code integration)\n` +
+  `Broadcast scope: "all" reaches ONLY sessions in YOUR project (same git repo) — it will NOT wake sessions in\n` +
+  `other projects. Address one specific session by its id (cross-project is allowed). To broadcast across EVERY\n` +
+  `project use "everyone" (rare — it interrupts unrelated work).\n` +
   `If you find a bug in a PEER's project, don't fix it yourself — cc-msg fix the owner (precise).\n` +
   `\n` +
   `Incoming messages arrive automatically as system reminders:\n` +

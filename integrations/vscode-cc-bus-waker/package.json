@@ -1,0 +1,51 @@
+{
+  "name": "cc-bus-waker",
+  "displayName": "cc-chat bus waker",
+  "description": "Wakes idle Claude Code terminals in this VS Code window when a cc-chat message arrives, and opens new claude tabs on request (cc-msg spawn).",
+  "version": "0.1.0",
+  "publisher": "cc-chat",
+  "engines": { "vscode": "^1.70.0" },
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "ccBusWaker.toggle", "title": "cc-bus Waker: enable/disable" },
+      { "command": "ccBusWaker.status", "title": "cc-bus Waker: show log" }
+    ],
+    "configuration": {
+      "title": "cc-bus Waker",
+      "properties": {
+        "ccBusWaker.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Wake idle Claude Code terminals when a cc-chat message arrives."
+        },
+        "ccBusWaker.idleSeconds": {
+          "type": "number",
+          "default": 15,
+          "description": "Only wake a session whose transcript has been idle this many seconds (i.e. not mid-generation)."
+        },
+        "ccBusWaker.pollMs": {
+          "type": "number",
+          "default": 2500,
+          "description": "How often (ms) to scan the cc-chat inboxes and spawn queue."
+        },
+        "ccBusWaker.nudgeText": {
+          "type": "string",
+          "default": "read the pending cc-chat message(s)",
+          "description": "Short line sent to the terminal so Claude takes a turn and the hook delivers the message."
+        },
+        "ccBusWaker.skipActiveTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Never nudge the terminal you're currently in (protects text you're typing)."
+        },
+        "ccBusWaker.notify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a short toast when a background session receives a message or a new tab is opened."
+        }
+      }
+    }
+  }
+}
