@@ -18,7 +18,9 @@ if (!existing) {
   e.label = bus.composeLabel(e);
   bus.saveEntry(e);
 } else {
-  bus.touch(sid);
+  // Backfill pid if missing so terminal integrations can match the session to its terminal.
+  if (!existing.pid) { existing.pid = process.ppid; bus.saveEntry(existing); }
+  else bus.touch(sid);
 }
 
 // Show only SAME-PROJECT peers: a session cares about peers sharing its repo (shared
