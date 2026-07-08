@@ -33,6 +33,8 @@ let timer = null;
 let draining = false;
 const lastNudged = new Map();   // sid -> inbox line-count we last nudged for
 const ppidCache = new Map();    // claudePid -> shellPid
+const lastNamed = new Map();    // shellPid -> bus label we last set as the terminal name
+const lastNameAt = new Map();   // shellPid -> ts of last background rename (throttle flicker)
 
 function log(m) { if (out) out.appendLine(`[${new Date().toLocaleTimeString()}] ${m}`); }
 function cfg() { return vscode.workspace.getConfiguration('ccBusWaker'); }
@@ -155,11 +157,13 @@ async function tick() {
     const idleMs = Math.max(0, (cfg().get('idleSeconds', 15)) * 1000);
     const skipActive = cfg().get('skipActiveTerminal', true);
     const nudgeText = cfg().get('nudgeText', 'read the pending cc-chat message(s)');
+    const renameTerminals = cfg().get('renameTerminals', true);
     const active = vscode.window.activeTerminal;
 
     const byShell = await terminalsByShellPid();
     let connected = 0;
-    const woken = [];   // {label, from, intent} nudged this tick — for the user toast
+    const woken = [];      // {label, from, intent} nudged this tick — for the user toast
+    const toRename = [];   // {term, shellPid, label} terminals whose tab name != bus label
 
     for (const entry of listTabs()) {
       const sid = entry.sessionId;
@@ -167,6 +171,11 @@ async function tick() {
       const term = shellPid ? byShell.get(shellPid) : null;
       if (!term) continue;          // session not in THIS window — another window handles it
       connected++;
+
+      // collect for tab-name sync (independent of unread state): every connected terminal
+      if (renameTerminals && entry.label && lastNamed.get(shellPid) !== entry.label) {
+        toRename.push({ term, shellPid, label: entry.label });
+      }
 
       const lines = countLines(inboxFile(sid));
       const cursor = readCursor(sid);
@@ -202,6 +211,32 @@ async function tick() {
         : `📨 ${woken.length} sessions got messages: ${parts.join(',  ')}`;
       vscode.window.showInformationMessage(msg);
     }
+
+    // sync terminal tab names to bus labels (overrides Claude Code's OSC task-title)
+    if (renameTerminals && toRename.length) {
+      const prev = vscode.window.activeTerminal;
+      let bgDone = 0;
+      for (const c of toRename) {
+        if (lastNamed.get(c.shellPid) === c.label) continue;
+        const isActive = c.term === prev;
+        if (!isActive) {
+          if (bgDone >= 2) continue;                                           // cap flicker per tick
+          if (Date.now() - (lastNameAt.get(c.shellPid) || 0) < 15000) continue; // throttle per terminal
+          try { c.term.show(); } catch {}
+          await new Promise((r) => setTimeout(r, 70));
+          bgDone++; lastNameAt.set(c.shellPid, Date.now());
+        }
+        try {
+          await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: c.label });
+          lastNamed.set(c.shellPid, c.label);
+          log(`renamed terminal -> ${c.label}`);
+        } catch (e) { log(`rename error (renameWithArg): ${e.message}`); }
+      }
+      if (bgDone) {
+        if (prev) { try { prev.show(); } catch {} }
+        else { try { await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup'); } catch {} }
+      }
+    }
   } catch (e) {
     log(`tick error: ${e.message}`);
   } finally {
@@ -234,7 +269,8 @@ function activate(context) {
       vscode.window.showInformationMessage(`cc-bus waker: ${next ? 'enabled' : 'disabled'}`);
       updateBar(0);
     }),
-    vscode.commands.registerCommand('ccBusWaker.status', () => out.show())
+    vscode.commands.registerCommand('ccBusWaker.status', () => out.show()),
+    vscode.commands.registerCommand('ccBusWaker.syncNames', () => { lastNamed.clear(); lastNameAt.clear(); tick(); vscode.window.showInformationMessage('cc-bus: re-syncing terminal names'); })
   );
 
   const schedule = () => {

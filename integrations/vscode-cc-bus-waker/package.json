@@ -10,7 +10,8 @@
   "contributes": {
     "commands": [
       { "command": "ccBusWaker.toggle", "title": "cc-bus Waker: enable/disable" },
-      { "command": "ccBusWaker.status", "title": "cc-bus Waker: show log" }
+      { "command": "ccBusWaker.status", "title": "cc-bus Waker: show log" },
+      { "command": "ccBusWaker.syncNames", "title": "cc-bus Waker: sync terminal names" }
     ],
     "configuration": {
       "title": "cc-bus Waker",
@@ -44,6 +45,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show a short toast when a background session receives a message or a new tab is opened."
+        },
+        "ccBusWaker.renameTerminals": {
+          "type": "boolean",
+          "default": true,
+          "description": "Rename terminal tabs to their cc-chat bus label (e.g. b9b1-zoom-migration), overriding Claude Code's own task-title. Background terminals are briefly focused when renamed (a short flicker)."
         }
       }
     }

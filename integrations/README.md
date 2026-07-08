@@ -44,6 +44,13 @@ What it does, per VS Code window:
 2. **Spawn tabs.** `cc-msg spawn [--cwd <dir>] [--resume <sid>] [prompt…]` drops a request into
    `~/.cc-chat/bus/spawn/`; the extension opens a new terminal running `claude` (or
    `claude --resume`), and once the new session registers, types the initial prompt.
+3. **Name the tabs.** It renames each terminal tab to its session's bus label (e.g.
+   `b9b1-zoom-migration`), so the VS Code terminal list mirrors the bus. This overrides Claude
+   Code's own OSC task-title. `Terminal.name` is read-only, so it uses the `renameWithArg`
+   command on the active terminal — a background terminal is briefly focused to rename it (a
+   short flicker), throttled and capped per poll; the active terminal is renamed in place with
+   no flicker. Toggle with `ccBusWaker.renameTerminals`; force a full resync with the command
+   *cc-bus Waker: sync terminal names*.
 
 Sessions are matched to terminals by process tree: the registry stores each session's `pid`
 (the claude process), whose parent is the terminal's shell — compared against
