@@ -65,6 +65,16 @@ function readCursor(sid) {
 function transcriptMtime(cwd, sid) {
   try { return fs.statSync(transcriptPath(cwd, sid)).mtimeMs; } catch { return 0; }
 }
+// Session state from transcript activity (no hooks): fresh writes = working, quiet = done,
+// long-quiet = afk. Appended to the terminal tab name.
+function stateSuffix(cwd, sid) {
+  const mt = transcriptMtime(cwd, sid);
+  if (!mt) return '';
+  const age = Date.now() - mt;
+  if (age < 15000) return ' · working';
+  if (age < 600000) return ' · done';
+  return ' · afk';
+}
 function newestUnreadMeta(sid, cursor) {
   try {
     const fresh = fs.readFileSync(inboxFile(sid), 'utf8').split('\n').filter(Boolean).slice(cursor);
@@ -158,6 +168,7 @@ async function tick() {
     const skipActive = cfg().get('skipActiveTerminal', true);
     const nudgeText = cfg().get('nudgeText', 'read the pending cc-chat message(s)');
     const renameTerminals = cfg().get('renameTerminals', true);
+    const showState = cfg().get('showState', true);
     const active = vscode.window.activeTerminal;
 
     const byShell = await terminalsByShellPid();
@@ -172,9 +183,11 @@ async function tick() {
       if (!term) continue;          // session not in THIS window — another window handles it
       connected++;
 
-      // collect for tab-name sync (independent of unread state): every connected terminal
-      if (renameTerminals && entry.label && lastNamed.get(shellPid) !== entry.label) {
-        toRename.push({ term, shellPid, label: entry.label });
+      // collect for tab-name sync (independent of unread state): every connected terminal.
+      // Name = bus label + optional live state suffix (working / done / afk).
+      if (renameTerminals && entry.label) {
+        const desired = entry.label + (showState ? stateSuffix(entry.cwd, sid) : '');
+        if (lastNamed.get(shellPid) !== desired) toRename.push({ term, shellPid, label: desired });
       }
 
       const lines = countLines(inboxFile(sid));

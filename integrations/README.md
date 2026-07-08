@@ -50,7 +50,9 @@ What it does, per VS Code window:
    command on the active terminal — a background terminal is briefly focused to rename it (a
    short flicker), throttled and capped per poll; the active terminal is renamed in place with
    no flicker. Toggle with `ccBusWaker.renameTerminals`; force a full resync with the command
-   *cc-bus Waker: sync terminal names*.
+   *cc-bus Waker: sync terminal names*. With `ccBusWaker.showState` (default on) it also appends
+   the session state — `· working` / `· done` / `· afk` — derived from transcript activity, so
+   the tab list doubles as a live status view.
 
 Sessions are matched to terminals by process tree: the registry stores each session's `pid`
 (the claude process), whose parent is the terminal's shell — compared against

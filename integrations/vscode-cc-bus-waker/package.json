@@ -50,6 +50,11 @@
           "type": "boolean",
           "default": true,
           "description": "Rename terminal tabs to their cc-chat bus label (e.g. b9b1-zoom-migration), overriding Claude Code's own task-title. Background terminals are briefly focused when renamed (a short flicker)."
+        },
+        "ccBusWaker.showState": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append the session state to the tab name (· working / · done / · afk), derived from transcript activity. Requires renameTerminals."
         }
       }
     }
