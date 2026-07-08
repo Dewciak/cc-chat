@@ -52,7 +52,10 @@ What it does, per VS Code window:
    no flicker. Toggle with `ccBusWaker.renameTerminals`; force a full resync with the command
    *cc-bus Waker: sync terminal names*. With `ccBusWaker.showState` (default on) it also appends
    the session state — `· working` / `· done` / `· afk` — derived from transcript activity, so
-   the tab list doubles as a live status view.
+   the tab list doubles as a live status view. With `ccBusWaker.stateIcons` it also sets a tab
+   icon per state (`play` / `check` / `circle-slash`) — but only if your VS Code exposes a
+   `changeIcon`-with-argument command; the extension detects this at startup and logs whether
+   it's using it (check the *cc-bus waker* output channel).
 
 Sessions are matched to terminals by process tree: the registry stores each session's `pid`
 (the claude process), whose parent is the terminal's shell — compared against

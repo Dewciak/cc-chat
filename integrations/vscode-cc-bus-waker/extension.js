@@ -33,7 +33,9 @@ let timer = null;
 let draining = false;
 const lastNudged = new Map();   // sid -> inbox line-count we last nudged for
 const lastNamed = new Map();    // shellPid -> bus label we last set as the terminal name
+const lastIcon = new Map();     // shellPid -> codicon id we last set as the terminal icon
 const lastNameAt = new Map();   // shellPid -> ts of last background rename (throttle flicker)
+let ICON_CMD = null;            // resolved at activate: the changeIcon-with-arg command, if this VS Code has one
 
 function log(m) { if (out) out.appendLine(`[${new Date().toLocaleTimeString()}] ${m}`); }
 function cfg() { return vscode.workspace.getConfiguration('ccBusWaker'); }
@@ -73,6 +75,15 @@ function stateSuffix(cwd, sid) {
   if (age < 15000) return ' · working';
   if (age < 600000) return ' · done';
   return ' · afk';
+}
+// codicon id per state, for the tab icon (working / done / afk)
+function stateIcon(cwd, sid) {
+  const mt = transcriptMtime(cwd, sid);
+  if (!mt) return null;
+  const age = Date.now() - mt;
+  if (age < 15000) return 'play';
+  if (age < 600000) return 'check';
+  return 'circle-slash';
 }
 function newestUnreadMeta(sid, cursor) {
   try {
@@ -168,6 +179,7 @@ async function tick() {
     const nudgeText = cfg().get('nudgeText', 'read the pending cc-chat message(s)');
     const renameTerminals = cfg().get('renameTerminals', true);
     const showState = cfg().get('showState', true);
+    const stateIcons = cfg().get('stateIcons', true) && !!ICON_CMD;
     const active = vscode.window.activeTerminal;
 
     const byShell = await terminalsByShellPid();
@@ -182,11 +194,14 @@ async function tick() {
       if (!term) continue;          // session not in THIS window — another window handles it
       connected++;
 
-      // collect for tab-name sync (independent of unread state): every connected terminal.
-      // Name = bus label + optional live state suffix (working / done / afk).
+      // collect for tab sync (independent of unread state): every connected terminal.
+      // Name = bus label + optional state suffix; icon = optional state codicon.
       if (renameTerminals && entry.label) {
-        const desired = entry.label + (showState ? stateSuffix(entry.cwd, sid) : '');
-        if (lastNamed.get(shellPid) !== desired) toRename.push({ term, shellPid, label: desired });
+        const desiredName = entry.label + (showState ? stateSuffix(entry.cwd, sid) : '');
+        const desiredIcon = stateIcons ? stateIcon(entry.cwd, sid) : null;
+        const nameChanged = lastNamed.get(shellPid) !== desiredName;
+        const iconChanged = !!desiredIcon && lastIcon.get(shellPid) !== desiredIcon;
+        if (nameChanged || iconChanged) toRename.push({ term, shellPid, name: desiredName, icon: desiredIcon, nameChanged, iconChanged });
       }
 
       const lines = countLines(inboxFile(sid));
@@ -229,7 +244,6 @@ async function tick() {
       const prev = vscode.window.activeTerminal;
       let bgDone = 0;
       for (const c of toRename) {
-        if (lastNamed.get(c.shellPid) === c.label) continue;
         const isActive = c.term === prev;
         if (!isActive) {
           if (bgDone >= 2) continue;                                           // cap flicker per tick
@@ -238,11 +252,20 @@ async function tick() {
           await new Promise((r) => setTimeout(r, 70));
           bgDone++; lastNameAt.set(c.shellPid, Date.now());
         }
-        try {
-          await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: c.label });
-          lastNamed.set(c.shellPid, c.label);
-          log(`renamed terminal -> ${c.label}`);
-        } catch (e) { log(`rename error (renameWithArg): ${e.message}`); }
+        if (c.nameChanged) {
+          try {
+            await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: c.name });
+            lastNamed.set(c.shellPid, c.name);
+            log(`renamed terminal -> ${c.name}`);
+          } catch (e) { log(`rename error (renameWithArg): ${e.message}`); }
+        }
+        if (c.iconChanged && ICON_CMD) {
+          try {
+            await vscode.commands.executeCommand(ICON_CMD, { icon: c.icon });
+            lastIcon.set(c.shellPid, c.icon);
+            log(`terminal icon -> ${c.icon}`);
+          } catch (e) { log(`icon error (${ICON_CMD}): ${e.message}`); }
+        }
       }
       if (bgDone) {
         if (prev) { try { prev.show(); } catch {} }
@@ -272,6 +295,13 @@ function activate(context) {
   statusBar.show();
   updateBar(0);
 
+  // detect whether this VS Code exposes a "change icon with arg" command (varies by version)
+  vscode.commands.getCommands(true).then((cmds) => {
+    ICON_CMD = ['workbench.action.terminal.changeIconWithArg', 'workbench.action.terminal.changeIcon.withArg']
+      .find((c) => cmds.includes(c)) || null;
+    log(ICON_CMD ? `state icons: using ${ICON_CMD}` : 'state icons: no changeIcon-with-arg command in this VS Code — skipping');
+  }).catch(() => {});
+
   context.subscriptions.push(
     out, statusBar,
     vscode.commands.registerCommand('ccBusWaker.toggle', async () => {
@@ -282,7 +312,7 @@ function activate(context) {
       updateBar(0);
     }),
     vscode.commands.registerCommand('ccBusWaker.status', () => out.show()),
-    vscode.commands.registerCommand('ccBusWaker.syncNames', () => { lastNamed.clear(); lastNameAt.clear(); tick(); vscode.window.showInformationMessage('cc-bus: re-syncing terminal names'); })
+    vscode.commands.registerCommand('ccBusWaker.syncNames', () => { lastNamed.clear(); lastIcon.clear(); lastNameAt.clear(); tick(); vscode.window.showInformationMessage('cc-bus: re-syncing terminal names'); })
   );
 
   const schedule = () => {

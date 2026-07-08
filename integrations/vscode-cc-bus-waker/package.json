@@ -55,6 +55,11 @@
           "type": "boolean",
           "default": true,
           "description": "Append the session state to the tab name (· working / · done / · afk), derived from transcript activity. Requires renameTerminals."
+        },
+        "ccBusWaker.stateIcons": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set the tab icon by state (play = working, check = done, circle-slash = afk). Only works if your VS Code exposes a changeIcon-with-arg command (the extension detects this). Requires renameTerminals."
         }
       }
     }
