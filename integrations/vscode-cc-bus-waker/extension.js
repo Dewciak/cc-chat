@@ -32,7 +32,6 @@ let statusBar = null;
 let timer = null;
 let draining = false;
 const lastNudged = new Map();   // sid -> inbox line-count we last nudged for
-const ppidCache = new Map();    // claudePid -> shellPid
 const lastNamed = new Map();    // shellPid -> bus label we last set as the terminal name
 const lastNameAt = new Map();   // shellPid -> ts of last background rename (throttle flicker)
 
@@ -83,13 +82,13 @@ function newestUnreadMeta(sid, cursor) {
     return { from: m.from, intent: m.intent };
   } catch { return null; }
 }
+// Shell pid = parent of the claude process = the terminal's shell. Computed FRESH every
+// time on purpose: the OS reuses pids, so a cached claudePid->shellPid can go stale and
+// map a session onto another session's terminal (wrong tab name / wrong nudge target).
 function shellPidOf(claudePid) {
   if (!claudePid) return null;
-  if (ppidCache.has(claudePid)) return ppidCache.get(claudePid);
-  let ppid = null;
-  try { ppid = parseInt(cp.execFileSync('ps', ['-o', 'ppid=', '-p', String(claudePid)], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(), 10) || null; } catch {}
-  ppidCache.set(claudePid, ppid);
-  return ppid;
+  try { return parseInt(cp.execFileSync('ps', ['-o', 'ppid=', '-p', String(claudePid)], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(), 10) || null; }
+  catch { return null; }
 }
 
 // Submit a prompt to a Claude Code TUI. Text + trailing newline in ONE write is treated as
