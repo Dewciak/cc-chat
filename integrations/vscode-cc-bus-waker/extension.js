@@ -187,6 +187,7 @@ async function tick() {
     let connected = 0;
     const woken = [];      // {label, from, intent} nudged this tick — for the user toast
     const toRename = [];   // {term, shellPid, label} terminals whose tab name != bus label
+    const nudgedShells = new Set();   // terminals nudged this tick — do NOT also rename them now
 
     for (const entry of listTabs()) {
       const sid = entry.sessionId;
@@ -226,6 +227,7 @@ async function tick() {
       try {
         typeAndEnter(term, nudgeText);
         lastNudged.set(sid, lines);
+        nudgedShells.add(shellPid);
         woken.push({ label: entry.label, from: meta && meta.from, intent: meta && meta.intent });
       } catch (e) { log(`sendText error: ${e.message}`); }
     }
@@ -245,12 +247,13 @@ async function tick() {
       const prev = vscode.window.activeTerminal;
       let bgDone = 0;
       for (const c of toRename) {
+        if (nudgedShells.has(c.shellPid)) continue;          // don't fight this tick's nudge — rename next tick
         const isActive = c.term === prev;
         if (!isActive) {
-          if (bgDone >= 2) continue;                                           // cap flicker per tick
+          if (bgDone >= 2) continue;                                           // cap per tick
           if (Date.now() - (lastNameAt.get(c.shellPid) || 0) < 15000) continue; // throttle per terminal
-          try { c.term.show(); } catch {}
-          await new Promise((r) => setTimeout(r, 70));
+          try { c.term.show(true); } catch {}                 // reveal WITHOUT stealing keyboard focus
+          await new Promise((r) => setTimeout(r, 60));
           bgDone++; lastNameAt.set(c.shellPid, Date.now());
         }
         if (c.nameChanged) {
@@ -268,10 +271,8 @@ async function tick() {
           } catch (e) { log(`icon error (${ICON_CMD}): ${e.message}`); }
         }
       }
-      if (bgDone) {
-        if (prev) { try { prev.show(); } catch {} }
-        else { try { await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup'); } catch {} }
-      }
+      // restore the panel to the previously-active terminal, without stealing keyboard focus
+      if (bgDone && prev) { try { prev.show(true); } catch {} }
     }
   } catch (e) {
     log(`tick error: ${e.message}`);
