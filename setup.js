@@ -68,6 +68,20 @@ addHook('FileChanged', hookCmd('cc-msg-recv.js'), { timeout: 10, asyncRewake: tr
 addHook('UserPromptSubmit', hookCmd('cc-msg-board.js'), { timeout: 10 });
 addHook('SessionEnd', hookCmd('cc-msg-end.js'), { timeout: 10 });
 
+// Live-state hook (for the cc-bus VS Code integration: working / done / waiting=decision).
+// Separate presence check per (file+arg) because UserPromptSubmit already has the board hook.
+function addStateHook(event, arg) {
+  cfg.hooks[event] = cfg.hooks[event] || [];
+  const present = cfg.hooks[event].some((g) => (g.hooks || []).some((h) =>
+    (h.command || '').includes('cc-msg-state.js') && (h.command || '').trim().endsWith(arg)));
+  if (present) { log(`= ${event} already has cc-msg-state (${arg})`); return; }
+  cfg.hooks[event].push({ hooks: [{ type: 'command', command: `${hookCmd('cc-msg-state.js')} ${arg}`, timeout: 5 }] });
+  log(`✓ added ${event} state hook (${arg})`);
+}
+addStateHook('UserPromptSubmit', 'working');
+addStateHook('Stop', 'done');
+addStateHook('Notification', 'waiting');
+
 if (!cfg.permissions.allow.includes('Bash(cc-msg *)')) {
   cfg.permissions.allow.push('Bash(cc-msg *)');
   log('✓ added permission: Bash(cc-msg *)');

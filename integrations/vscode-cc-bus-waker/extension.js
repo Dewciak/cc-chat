@@ -68,23 +68,21 @@ function transcriptMtime(cwd, sid) {
 }
 // Session state from transcript activity (no hooks): fresh writes = working, quiet = done,
 // long-quiet = afk. Appended to the terminal tab name.
-function stateSuffix(cwd, sid) {
-  const mt = transcriptMtime(cwd, sid);
-  if (!mt) return '';
-  const age = Date.now() - mt;
-  if (age < 15000) return ' · working';
-  if (age < 600000) return ' · done';
-  return ' · afk';
+// Session state. Priority: transcript being actively written = working (overrides stale
+// signals); else the registry `state` (from the cc-msg-state hook): "waiting" = decision;
+// else recent = done; else long-quiet = afk.
+function sessionState(entry) {
+  const mt = transcriptMtime(entry.cwd, entry.sessionId);
+  const tAge = mt ? Date.now() - mt : Infinity;
+  if (tAge < 15000) return 'working';
+  if (entry.state === 'waiting') return 'decision';
+  if (tAge > 600000) return mt ? 'afk' : null;
+  return 'done';
 }
-// codicon id per state, for the tab icon (working / done / afk)
-function stateIcon(cwd, sid) {
-  const mt = transcriptMtime(cwd, sid);
-  if (!mt) return null;
-  const age = Date.now() - mt;
-  if (age < 15000) return 'play';
-  if (age < 600000) return 'check';
-  return 'circle-slash';
-}
+const STATE_WORD = { working: 'working', decision: 'decision', done: 'done', afk: 'afk' };
+const STATE_ICON = { working: 'play', decision: 'question', done: 'check', afk: 'circle-slash' };
+function stateSuffix(entry) { const s = sessionState(entry); return s ? ` · ${STATE_WORD[s]}` : ''; }
+function stateIcon(entry) { const s = sessionState(entry); return s ? STATE_ICON[s] : null; }
 function newestUnreadMeta(sid, cursor) {
   try {
     const fresh = fs.readFileSync(inboxFile(sid), 'utf8').split('\n').filter(Boolean).slice(cursor);
@@ -197,8 +195,8 @@ async function tick() {
       // collect for tab sync (independent of unread state): every connected terminal.
       // Name = bus label + optional state suffix; icon = optional state codicon.
       if (renameTerminals && entry.label) {
-        const desiredName = entry.label + (showState ? stateSuffix(entry.cwd, sid) : '');
-        const desiredIcon = stateIcons ? stateIcon(entry.cwd, sid) : null;
+        const desiredName = entry.label + (showState ? stateSuffix(entry) : '');
+        const desiredIcon = stateIcons ? stateIcon(entry) : null;
         const nameChanged = lastNamed.get(shellPid) !== desiredName;
         const iconChanged = !!desiredIcon && lastIcon.get(shellPid) !== desiredIcon;
         if (nameChanged || iconChanged) toRename.push({ term, shellPid, name: desiredName, icon: desiredIcon, nameChanged, iconChanged });
