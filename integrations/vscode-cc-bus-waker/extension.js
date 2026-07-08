@@ -74,10 +74,13 @@ function transcriptMtime(cwd, sid) {
 function sessionState(entry) {
   const mt = transcriptMtime(entry.cwd, entry.sessionId);
   const tAge = mt ? Date.now() - mt : Infinity;
-  if (tAge < 15000) return 'working';
-  if (entry.state === 'waiting') return 'decision';
-  if (tAge > 600000) return mt ? 'afk' : null;
-  return 'done';
+  if (tAge < 15000) return 'working';               // fresh transcript = actively producing
+  const st = entry.state;
+  if (st === 'waiting') return 'decision';
+  if (st === 'working') return tAge > 1200000 ? 'afk' : 'working';  // trust hook; 20min silent = stuck/left
+  if (st === 'done') return tAge > 600000 ? 'afk' : 'done';
+  if (!mt) return null;
+  return tAge > 600000 ? 'afk' : 'done';
 }
 const STATE_WORD = { working: 'working', decision: 'decision', done: 'done', afk: 'afk' };
 const STATE_ICON = { working: 'play', decision: 'question', done: 'check', afk: 'circle-slash' };
