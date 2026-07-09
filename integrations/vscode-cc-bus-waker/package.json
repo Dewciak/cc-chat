@@ -48,8 +48,8 @@
         },
         "ccBusWaker.renameTerminals": {
           "type": "boolean",
-          "default": true,
-          "description": "Rename terminal tabs to their cc-chat bus label (e.g. b9b1-zoom-migration), overriding Claude Code's own task-title. Background terminals are briefly focused when renamed (a short flicker)."
+          "default": false,
+          "description": "Rename terminal tabs to their cc-chat bus label. OFF by default: a manual name overrides Claude Code's dynamic title and disables its native working indicator (the dot). Turn on only if you prefer bus names over the native dot."
         },
         "ccBusWaker.showState": {
           "type": "boolean",

@@ -42,6 +42,40 @@ function projectKey(cwd) {
 }
 const projOf = (cwd) => path.basename(projectKey(cwd || ''));
 
+// Claude Code's own auto-generated session title (the "ai-title" entry in its transcript) —
+// the name shown natively on the terminal tab. cc-bus displays "<id> · <aiTitle>".
+const _titleCache = new Map();   // sid -> { title, mtime }
+const titleById = new Map();     // 4-char id -> aiTitle
+function transcriptPathOf(cwd, sid) {
+  return path.join(os.homedir(), '.claude', 'projects', String(cwd || '').replace(/\//g, '-'), `${sid}.jsonl`);
+}
+function aiTitleOf(cwd, sid) {
+  const tp = transcriptPathOf(cwd, sid);
+  let mt = 0;
+  try { mt = fs.statSync(tp).mtimeMs; } catch { return null; }
+  const cached = _titleCache.get(sid);
+  if (cached && cached.mtime === mt) return cached.title;
+  let title = null;
+  try {
+    for (const l of fs.readFileSync(tp, 'utf8').split('\n')) {
+      if (!l.includes('ai-title')) continue;
+      try { const j = JSON.parse(l); if (j.type === 'ai-title' && j.aiTitle) title = j.aiTitle; } catch {}
+    }
+  } catch {}
+  _titleCache.set(sid, { title, mtime: mt });
+  return title;
+}
+function refreshTitles() {
+  try {
+    for (const f of fs.readdirSync(REG)) {
+      if (!f.endsWith('.json')) continue;
+      let e; try { e = JSON.parse(fs.readFileSync(path.join(REG, f), 'utf8')); } catch { continue; }
+      const t = aiTitleOf(e.cwd, e.sessionId);
+      if (t) titleById.set(e.id || (e.label || '').split('-')[0], t);
+    }
+  } catch {}
+}
+
 // cc-msg on PATH (~/.local/bin), falling back to the repo bin
 function resolveCcMsg() {
   const cands = [path.join(os.homedir(), '.local', 'bin', 'cc-msg'), path.join(__dirname, '..', 'bin', 'cc-msg')];
@@ -84,8 +118,10 @@ const idOf = (label) => (label || '?').split('-')[0];
 const cName = (label) => {
   if (!label) return '?';
   if (label.startsWith('*')) return `${DIM}all${RESET}`;
-  // colour keyed by the stable 4-char id, but DISPLAY the full descriptive name
-  return `${fg(tabColor(idOf(label)))}${BOLD}${label}${RESET}`;
+  // colour keyed by the stable 4-char id; DISPLAY "<id> · <Claude ai-title>", else bus label
+  const id = idOf(label);
+  const t = titleById.get(id);
+  return `${fg(tabColor(id))}${BOLD}${t ? `${id} · ${t}` : label}${RESET}`;
 };
 
 // ---- intents ----
@@ -161,8 +197,9 @@ function renderLegend() {
   lines.push(bar);
   for (const t of tabs) {
     const id = t.id || idOf(t.label);
+    const title = titleById.get(id) || aiTitleOf(t.cwd, t.sessionId);
     const swatch = `${fg(tabColor(id))}██${RESET}`;
-    const idc = `${fg(tabColor(id))}${BOLD}${id}${RESET}`;
+    const idc = `${fg(tabColor(id))}${BOLD}${title ? `${id} · ${title}` : (t.label || id)}${RESET}`;
     const proj = path.basename(t.cwd || '');
     const ageMin = Math.round((now - (t.statusTs || t.ts || now)) / 60000);
     const unstable = t.unstable ? `${fg(202)}${BOLD}[MID-CHANGE]${RESET} ` : '';
@@ -181,6 +218,7 @@ function readAllLines() {
   return raw.split('\n').filter(Boolean);
 }
 
+refreshTitles();
 console.log(renderLegend());
 for (const l of readAllLines().slice(-TAIL)) {
   try { const out = renderMsg(JSON.parse(l)); if (out) console.log(out); } catch {}
@@ -247,6 +285,7 @@ function schedule() { clearTimeout(timer); timer = setTimeout(drain, 120); }
 try { fs.watch(LOG, { persistent: true }, schedule); }
 catch { setInterval(drain, 1000); }
 setInterval(drain, 2000); // safety poll
+setInterval(refreshTitles, 15000); // refresh Claude ai-titles for "<id> · <title>"
 
 const bye = () => {
   try { if (INTERACTIVE) process.stdin.setRawMode(false); } catch {}
