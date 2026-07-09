@@ -109,7 +109,10 @@ function saveEntry(entry) {
   // Mirror to the persistent archive so a closed session can still be revived by id.
   try {
     fs.writeFileSync(path.join(SESSIONS, `${entry.sessionId}.json`),
-      JSON.stringify({ sessionId: entry.sessionId, label: entry.label, cwd: entry.cwd, lastSeen: now() }));
+      // include identity (id/role/activity/pinned) so a self-heal restores the SAME name
+      // instead of resetting to a default and losing a pinned name.
+      JSON.stringify({ sessionId: entry.sessionId, label: entry.label, cwd: entry.cwd, lastSeen: now(),
+        id: entry.id, role: entry.role, activity: entry.activity, pinned: entry.pinned }));
   } catch {}
 }
 

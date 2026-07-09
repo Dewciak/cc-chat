@@ -14,8 +14,15 @@ if (!sid) { process.exit(0); }
 const existing = bus.readEntry(bus.regFile(sid));
 if (!existing) {
   const cwd = input.cwd || process.env.HOME;
-  const e = { sessionId: sid, cwd, pid: process.ppid, id: bus.shortId(sid), role: bus.roleFor(cwd), activity: bus.slugActivity(bus.defaultBase(cwd)) };
-  e.label = bus.composeLabel(e);
+  // Restore prior identity from the archive so a transient drop doesn't reset the name or
+  // lose a pinned name (which would let the next cc-msg status rename the tab).
+  const prior = bus.listArchive().find((a) => a.sessionId === sid);
+  const e = { sessionId: sid, cwd, pid: process.ppid,
+    id: (prior && prior.id) || bus.shortId(sid),
+    role: (prior && prior.role) || bus.roleFor(cwd),
+    activity: (prior && prior.activity) || bus.slugActivity(bus.defaultBase(cwd)),
+    pinned: !!(prior && prior.pinned) };
+  e.label = (prior && prior.label) || bus.composeLabel(e);
   bus.saveEntry(e);
 } else {
   // Backfill pid if missing so terminal integrations can match the session to its terminal.

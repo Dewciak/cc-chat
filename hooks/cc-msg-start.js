@@ -24,6 +24,7 @@ const entry = {
   id: bus.shortId(sid),
   role: bus.roleFor(cwd, ccTab) || (prior && prior.role) || '',
   activity: bus.slugActivity(ccTab || (prior && prior.activity) || bus.defaultBase(cwd)),
+  pinned: !ccTab && !!(prior && prior.pinned),   // keep a pinned name across resume (unless CC_TAB overrides)
 };
 entry.label = bus.composeLabel(entry);
 const label = entry.label;
