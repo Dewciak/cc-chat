@@ -22,6 +22,20 @@ const SESSIONS = path.join(BUS, 'sessions');
 const REVIVING = path.join(BUS, 'reviving');
 const LOG = path.join(BUS, 'log.jsonl');
 
+// Claude Code's own auto-generated session title (the "ai-title" transcript entry) — the
+// name shown natively on the terminal tab. Used to answer "which session is <id>?".
+function aiTitle(cwd, sid) {
+  try {
+    const tp = path.join(os.homedir(), '.claude', 'projects', String(cwd || '').replace(/\//g, '-'), `${sid}.jsonl`);
+    let title = null;
+    for (const l of fs.readFileSync(tp, 'utf8').split('\n')) {
+      if (!l.includes('ai-title')) continue;
+      try { const j = JSON.parse(l); if (j.type === 'ai-title' && j.aiTitle) title = j.aiTitle; } catch {}
+    }
+    return title;
+  } catch { return null; }
+}
+
 const STALE_MS = 24 * 60 * 60 * 1000;          // drop live entries not refreshed in 24h
 const ARCHIVE_STALE_MS = 7 * 24 * 60 * 60 * 1000; // forget archived sessions after 7 days
 
@@ -298,5 +312,5 @@ module.exports = {
   defaultBase, listTabs, saveEntry, touch, removeEntry, labelOf, uniqueLabel, setLabel,
   setStatus, applyName, resolveTargets, appendMessage, drainInbox, appendLog, readLog,
   listArchive, resolveDead, recentlyRevived, markReviving,
-  shortId, roleFor, slugActivity, composeLabel, projectKey,
+  shortId, roleFor, slugActivity, composeLabel, projectKey, aiTitle,
 };

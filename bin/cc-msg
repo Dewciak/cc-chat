@@ -119,11 +119,17 @@ function doSend(intent, target, text) {
 function showBoard() {
   const tabs = bus.listTabs();
   if (!tabs.length) { process.stdout.write('No live sessions.\n'); return; }
+  // ID-first (peers address each other by id) + Claude's own tab title + project + status,
+  // so you can tell WHICH session is which without renaming any terminal tabs.
   for (const t of tabs) {
+    const id = t.id || (t.label || '').split('-')[0];
+    const title = bus.aiTitle(t.cwd, t.sessionId) || (t.label || id);
+    const proj = path.basename(t.cwd || '');
     const me = t.sessionId === SELF ? ' (you)' : '';
     const age = t.statusTs ? `  [${Math.round((bus.now() - t.statusTs) / 1000)}s ago]` : '';
-    const flag = t.unstable ? '! MID-CHANGE — ' : '';
-    process.stdout.write(`"${t.label}"${me}: ${flag}${t.status || '(no status)'}${age}\n`);
+    const flag = t.unstable ? '  ! MID-CHANGE' : '';
+    const status = t.status ? `  — ${t.status}` : '';
+    process.stdout.write(`${id}  ${title}  (${proj})${me}${flag}${status}${age}\n`);
   }
 }
 
