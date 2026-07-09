@@ -201,6 +201,18 @@ if (key in INTENTS) {
   //   claude (optionally resuming a session and/or seeding an initial prompt). This only
   //   writes a queue file — opening the terminal is done by integrations/vscode-cc-bus-waker.
   const a = rest.slice();
+  // NOTE: spawn is EXECUTIVE — every non-flag arg becomes the new tab's prompt. Catch --help
+  // here, else it would open a tab whose prompt is the literal "--help".
+  if (a.includes('--help') || a.includes('-h') || a.includes('help')) {
+    process.stdout.write(
+      'cc-msg spawn — open a NEW claude tab (via the cc-bus VS Code integration)\n' +
+      '  usage: cc-msg spawn [--cwd <dir>] [--resume <sid>] [prompt...]\n' +
+      '  --cwd <dir>       project dir for the new tab (default: this tab\'s cwd)\n' +
+      '  --resume <sid>    resume a session instead of a fresh one\n' +
+      '  [prompt...]       initial prompt seeded into the new tab (everything else)\n' +
+      '  WARNING: spawn has no dry-run — any arg you pass becomes the prompt and a tab opens.\n');
+    process.exit(0);
+  }
   let cwd = null, resume = null;
   const promptParts = [];
   for (let i = 0; i < a.length; i++) {
