@@ -67,7 +67,11 @@ let ctx =
   `Coordinate via Bash:\n` +
   `  cc-msg fix <tab> "problem + where"  cc-msg ask <tab> "question"  cc-msg sync <tab> "I changed X; adapt Y"\n` +
   `  cc-msg send <tab> "info"            cc-msg done <tab> "what you did"   cc-msg who / list / history\n` +
-  `  cc-msg spawn [--resume <sid>] "<prompt>"  open a NEW claude tab (needs the cc-bus VS Code integration)\n` +
+  `  cc-msg spawn [--watch] [--resume <sid>] "<prompt>"  open a NEW claude tab (needs the cc-bus VS Code integration)\n` +
+  `TIGHT COORDINATION (you + a peer ping-pong, e.g. you spawned a helper): each of you keeps a background WATCHER\n` +
+  `armed so you wake each other's messages instead of going idle. Run \`cc-msg watch\` as a BACKGROUND Bash task\n` +
+  `(run_in_background) — Claude Code re-invokes you when it exits with a message; handle it, then RE-ARM it.\n` +
+  `When spawning the peer, use \`cc-msg spawn --watch "<prompt>"\` — it seeds the peer to arm its own watcher.\n` +
   `Broadcast scope: "all" reaches ONLY sessions in YOUR project (same git repo) — it will NOT wake sessions in\n` +
   `other projects. Address one specific session by its id (cross-project is allowed). To broadcast across EVERY\n` +
   `project use "everyone" (rare — it interrupts unrelated work).\n` +

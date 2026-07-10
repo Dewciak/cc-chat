@@ -215,18 +215,26 @@ if (key in INTENTS) {
       '  usage: cc-msg spawn [--cwd <dir>] [--resume <sid>] [prompt...]\n' +
       '  --cwd <dir>       project dir for the new tab (default: this tab\'s cwd)\n' +
       '  --resume <sid>    resume a session instead of a fresh one\n' +
+      '  --watch           mutual watcher: seed the new tab to arm `cc-msg watch` and coordinate with you\n' +
       '  [prompt...]       initial prompt seeded into the new tab (everything else)\n' +
       '  WARNING: spawn has no dry-run — any arg you pass becomes the prompt and a tab opens.\n');
     process.exit(0);
   }
-  let cwd = null, resume = null;
+  let cwd = null, resume = null, watch = false;
   const promptParts = [];
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--cwd' && a[i + 1]) { cwd = a[++i]; }
     else if (a[i] === '--resume' && a[i + 1]) { resume = a[++i]; }
+    else if (a[i] === '--watch') { watch = true; }
     else { promptParts.push(a[i]); }
   }
-  const prompt = promptParts.join(' ').trim();
+  let prompt = promptParts.join(' ').trim();
+  const myId = (FROM || '').split('-')[0];
+  if (watch) {
+    // mutual watcher: the new tab arms a background `cc-msg watch` so we wake each other's messages
+    const note = `[COORDINATION with ${myId}] Arm a watcher on your inbox NOW: run "cc-msg watch" as a BACKGROUND task (run_in_background) — Claude Code re-invokes you when it exits with a message; RE-ARM it after handling each message. Address me by id ${myId}.`;
+    prompt = prompt ? `${prompt}\n\n${note}` : note;
+  }
   if (!cwd) { const e = SELF ? bus.readEntry(bus.regFile(SELF)) : null; cwd = (e && e.cwd) || process.cwd(); }
   const dir = path.join(bus.BUS, 'spawn');
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
@@ -235,7 +243,8 @@ if (key in INTENTS) {
   catch (e) { die(`Could not write spawn request: ${e.message}`); }
   process.stdout.write(
     `[spawn] requested a new claude tab in ${cwd}${resume ? ` (resume ${resume})` : ''}${prompt ? ' + initial prompt' : ''}.\n` +
-    `Handled by the cc-bus VS Code integration in the window open on that project. The new tab appears on the bus shortly.\n`);
+    `Handled by the cc-bus VS Code integration in the window open on that project. The new tab appears on the bus shortly.\n` +
+    (watch ? `COORDINATION: the new tab will arm its watcher. NOW arm YOURS too — run "cc-msg watch" as run_in_background and re-arm after each message; you'll wake each other.\n` : ''));
 } else if (key === 'whoami') {
   process.stdout.write(`${FROM}${SELF ? ` (${SELF})` : ''}\n`);
 } else {
