@@ -16,7 +16,7 @@
       { "command": "ccBusWaker.refreshTabs", "title": "cc-bus: refresh tab list", "icon": "$(refresh)" }
     ],
     "viewsContainers": {
-      "panel": [ { "id": "ccBusPanel", "title": "cc-bus", "icon": "$(broadcast)" } ]
+      "activitybar": [ { "id": "ccBusPanel", "title": "cc-bus", "icon": "media/cc-bus.svg" } ]
     },
     "views": {
       "ccBusPanel": [ { "id": "ccBusTabs", "name": "Sessions (id · title · state)" } ]
