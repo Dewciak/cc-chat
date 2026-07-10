@@ -11,8 +11,19 @@
     "commands": [
       { "command": "ccBusWaker.toggle", "title": "cc-bus Waker: enable/disable" },
       { "command": "ccBusWaker.status", "title": "cc-bus Waker: show log" },
-      { "command": "ccBusWaker.syncNames", "title": "cc-bus Waker: sync terminal names" }
+      { "command": "ccBusWaker.syncNames", "title": "cc-bus Waker: sync terminal names" },
+      { "command": "ccBusWaker.focusTab", "title": "cc-bus: reveal terminal" },
+      { "command": "ccBusWaker.refreshTabs", "title": "cc-bus: refresh tab list", "icon": "$(refresh)" }
     ],
+    "viewsContainers": {
+      "panel": [ { "id": "ccBusPanel", "title": "cc-bus", "icon": "$(broadcast)" } ]
+    },
+    "views": {
+      "ccBusPanel": [ { "id": "ccBusTabs", "name": "Sessions (id · title · state)" } ]
+    },
+    "menus": {
+      "view/title": [ { "command": "ccBusWaker.refreshTabs", "when": "view == ccBusTabs", "group": "navigation" } ]
+    },
     "configuration": {
       "title": "cc-bus Waker",
       "properties": {

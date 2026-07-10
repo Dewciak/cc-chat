@@ -60,6 +60,12 @@ What it does, per VS Code window:
    extension detects this at startup and logs whether it's using it (see the *cc-bus waker*
    output channel).
 
+3. **Panel view + status bar.** Adds a **cc-bus** panel (next to TERMINAL/PROBLEMS) listing
+   every Claude terminal in the window as `<id> · <Claude ai-title>` + project + state; click a
+   row to reveal that terminal. The status-bar item shows the **active** terminal's id
+   (`cc-bus: d445`). This is how you map the ids peers use to actual terminals without renaming
+   the tabs (which would kill Claude's native working dot).
+
 Sessions are matched to terminals by process tree: the registry stores each session's `pid`
 (the claude process), whose parent is the terminal's shell — compared against
 `Terminal.processId`.

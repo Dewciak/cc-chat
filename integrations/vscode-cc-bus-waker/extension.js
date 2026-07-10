@@ -66,6 +66,17 @@ function readCursor(sid) {
 function transcriptMtime(cwd, sid) {
   try { return fs.statSync(transcriptPath(cwd, sid)).mtimeMs; } catch { return 0; }
 }
+// Claude Code's own session title (the "ai-title" transcript entry) — for the panel list.
+function aiTitleOf(cwd, sid) {
+  try {
+    let title = null;
+    for (const l of fs.readFileSync(transcriptPath(cwd, sid), 'utf8').split('\n')) {
+      if (!l.includes('ai-title')) continue;
+      try { const j = JSON.parse(l); if (j.type === 'ai-title' && j.aiTitle) title = j.aiTitle; } catch {}
+    }
+    return title;
+  } catch { return null; }
+}
 // Session state from transcript activity (no hooks): fresh writes = working, quiet = done,
 // long-quiet = afk. Appended to the terminal tab name.
 // Session state. Priority: transcript being actively written = working (overrides stale
@@ -281,14 +292,60 @@ async function tick() {
   }
 }
 
-function updateBar(connected) {
+// ---- status bar: show the ACTIVE terminal's bus id (or the connected count) ----
+let _connected = 0, _activeId = null, _activeLabel = null;
+function renderBar() {
   if (!statusBar) return;
-  const on = cfg().get('enabled', true);
-  statusBar.text = on ? `$(broadcast) cc-bus: ${connected}` : `$(circle-slash) cc-bus: off`;
-  statusBar.tooltip = on
-    ? `cc-bus waker active — ${connected} Claude terminal(s) in this window connected to the bus. Click to disable.`
-    : 'cc-bus waker disabled. Click to enable.';
+  if (!cfg().get('enabled', true)) { statusBar.text = '$(circle-slash) cc-bus: off'; statusBar.tooltip = 'cc-bus disabled. Click to enable.'; return; }
+  statusBar.text = `$(broadcast) cc-bus: ${_activeId || _connected}`;
+  statusBar.tooltip = _activeId
+    ? `Active tab: ${_activeLabel} (id ${_activeId})`
+    : `${_connected} Claude terminal(s) in this window connected. Click to toggle.`;
 }
+function updateBar(connected) { _connected = connected; renderBar(); }
+async function updateActiveId() {
+  const active = vscode.window.activeTerminal;
+  if (!active) { _activeId = null; _activeLabel = null; renderBar(); return; }
+  try {
+    const pid = await active.processId;
+    const e = listTabs().find((x) => shellPidOf(x.pid) === pid);
+    if (e) { _activeId = e.id || (e.label || '').split('-')[0]; _activeLabel = e.label; }
+    else { _activeId = null; _activeLabel = null; }
+  } catch { _activeId = null; _activeLabel = null; }
+  renderBar();
+}
+
+// ---- panel view: list Claude terminals in this window as "id · title · state" ----
+let tree = null;
+const STATE_TREE_ICON = { working: 'play', decision: 'question', done: 'check', afk: 'circle-slash' };
+class BusTree {
+  constructor() { this._e = new vscode.EventEmitter(); this.onDidChangeTreeData = this._e.event; this.items = []; }
+  refresh(items) { this.items = items; this._e.fire(); }
+  getTreeItem(i) { return i; }
+  getChildren() { return this.items; }
+}
+async function buildTreeItems() {
+  const byShell = await terminalsByShellPid();
+  const active = vscode.window.activeTerminal;
+  const items = [];
+  for (const entry of listTabs()) {
+    const shellPid = shellPidOf(entry.pid);
+    const term = shellPid ? byShell.get(shellPid) : null;
+    if (!term) continue;
+    const id = entry.id || (entry.label || '').split('-')[0];
+    const title = aiTitleOf(entry.cwd, entry.sessionId) || entry.label || id;
+    const st = sessionState(entry);
+    const it = new vscode.TreeItem(`${id} · ${title}`);
+    it.description = [path.basename(entry.cwd || ''), st].filter(Boolean).join(' · ');
+    it.tooltip = `${entry.label}\ncwd: ${entry.cwd}${entry.status ? `\n${entry.status}` : ''}`;
+    it.iconPath = new vscode.ThemeIcon(STATE_TREE_ICON[st] || 'terminal',
+      term === active ? new vscode.ThemeColor('charts.blue') : undefined);
+    it.command = { command: 'ccBusWaker.focusTab', title: 'focus', arguments: [shellPid] };
+    items.push(it);
+  }
+  return items;
+}
+async function refreshTree() { if (tree) { try { tree.refresh(await buildTreeItems()); } catch (e) { log(`tree error: ${e.message}`); } } }
 
 function activate(context) {
   out = vscode.window.createOutputChannel('cc-bus waker');
@@ -314,18 +371,31 @@ function activate(context) {
       updateBar(0);
     }),
     vscode.commands.registerCommand('ccBusWaker.status', () => out.show()),
-    vscode.commands.registerCommand('ccBusWaker.syncNames', () => { lastNamed.clear(); lastIcon.clear(); lastNameAt.clear(); tick(); vscode.window.showInformationMessage('cc-bus: re-syncing terminal names'); })
+    vscode.commands.registerCommand('ccBusWaker.syncNames', () => { lastNamed.clear(); lastIcon.clear(); lastNameAt.clear(); tick(); vscode.window.showInformationMessage('cc-bus: re-syncing terminal names'); }),
+    vscode.commands.registerCommand('ccBusWaker.refreshTabs', () => refreshTree()),
+    vscode.commands.registerCommand('ccBusWaker.focusTab', async (shellPid) => {
+      try { const t = (await terminalsByShellPid()).get(shellPid); if (t) t.show(); } catch {}
+    })
+  );
+
+  // panel view: "id · title · state" list of Claude terminals in this window
+  tree = new BusTree();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('ccBusTabs', tree),
+    vscode.window.onDidOpenTerminal(() => refreshTree()),
+    vscode.window.onDidCloseTerminal(() => refreshTree()),
+    vscode.window.onDidChangeActiveTerminal(() => { updateActiveId(); refreshTree(); })
   );
 
   const schedule = () => {
     if (timer) clearInterval(timer);
     const ms = Math.max(800, cfg().get('pollMs', 2500));
-    timer = setInterval(tick, ms);
+    timer = setInterval(() => { tick(); refreshTree(); updateActiveId(); }, ms);
   };
   context.subscriptions.push({ dispose: () => timer && clearInterval(timer) });
   vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration('ccBusWaker')) schedule(); }, null, context.subscriptions);
   schedule();
-  tick();
+  tick(); refreshTree(); updateActiveId();
   log('cc-bus waker started.');
 }
 
