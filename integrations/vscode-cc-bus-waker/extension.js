@@ -168,7 +168,10 @@ function scanSpawnRequests() {
     const claimed = reqPath + '.claimed';
     try { fs.renameSync(reqPath, claimed); } catch { continue; }   // lost the race to another window
     const launch = req.resume ? `claude --resume ${req.resume}` : 'claude';
-    const term = vscode.window.createTerminal({ cwd: req.cwd, name: 'claude' + (req.resume ? ' ⟳' : ' +') });
+    // No static `name`: a creation-time name freezes the tab (VS Code ignores OSC/ai-title
+    // and the bus-label rename when a static name is set) -> spawned tabs got stuck at
+    // "claude +". Without it the tab shows Claude's ai-title like a manually-opened tab.
+    const term = vscode.window.createTerminal({ cwd: req.cwd });
     term.show();
     term.sendText(launch, true);   // shell command — a normal newline submits fine
     log(`spawn: new terminal in ${req.cwd} (${launch})${req.prompt ? ' + initial prompt' : ''} [from ${req.from || '?'}]`);

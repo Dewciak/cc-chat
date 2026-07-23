@@ -25,8 +25,10 @@ if (!existing) {
   e.label = (prior && prior.label) || bus.composeLabel(e);
   bus.saveEntry(e);
 } else {
-  // Backfill pid if missing so terminal integrations can match the session to its terminal.
-  if (!existing.pid) { existing.pid = process.ppid; bus.saveEntry(existing); }
+  // Refresh pid every turn to the CURRENT live claude process (not just when missing): a
+  // SPAWNED tab's start-time pid can die when claude re-execs, leaving a stale-but-present
+  // pid that terminal integrations can't resolve -> the tab stays stuck as "claude +".
+  if (existing.pid !== process.ppid) { existing.pid = process.ppid; bus.saveEntry(existing); }
   else bus.touch(sid);
 }
 
