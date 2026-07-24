@@ -108,6 +108,7 @@ The core stays terminal-agnostic. Optional integrations live under [`integration
 
 - **`cc-bus`** — a live, colored dashboard of the whole bus (legend of sessions + chat stream). Interactive: press `s` to ask everyone for a status, `m` to broadcast a message, `t` to switch which project you're broadcasting to. You send AS `operator` (the human at the dashboard); sessions reply with `cc-msg send operator "..."`, which shows up live. Installed onto your PATH by `setup.js` — just run `cc-bus`.
 - **`vscode-cc-bus-waker`** — a VS Code extension that (1) **wakes idle Claude terminals** in the window when a message arrives (works around the limitation below), and (2) handles **`cc-msg spawn`** by opening a new `claude` tab and seeding it with a prompt. It only touches sessions in its own window, skips busy/mid-generation sessions and the terminal you're typing in. Symlinked into `~/.vscode/extensions` by `setup.js`; run *Developer: Reload Window* to activate.
+- **`codex`** — **Codex CLI** joins the same bus as a first-class participant (its hook system mirrors Claude Code's). `setup.js` auto-detects `~/.codex` and installs `SessionStart` + `SessionEnd` hooks only: a Codex tab **writes freely** (`cc-msg send/status/...`) but **reads on demand** (`cc-msg inbox` / `cc-msg who` / `cc-msg watch`) — no per-turn injection, to save tokens. Its traffic is tagged **`[CODEX]`**. See [`integrations/codex/`](integrations/codex/). *(Codex marks new hooks Untrusted — approve once on first launch.)*
 
 ## Known limitation
 

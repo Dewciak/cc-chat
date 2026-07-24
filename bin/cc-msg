@@ -1,28 +1,23 @@
 #!/usr/bin/env node
 'use strict';
-// cc-chat CLI — talk between independent Claude Code sessions.
-//   cc-msg send <tab|all> <msg>   share info (no reply expected)
-//   cc-msg ask  <tab|all> <msg>   ask a question (reply expected)
-//   cc-msg fix  <tab|all> <msg>   report a problem in their project (act + report done)
-//   cc-msg sync <tab|all> <msg>   "I changed X, adapt your side" — cross-side hand-off
-//   cc-msg done <tab|all> <msg>   report completion (no reply expected)
-//   cc-msg status <msg>           publish what you're working on (shared board)
-//   cc-msg busy <msg>             mark mid-change (shared build/types may break); cc-msg ready clears
-//   cc-msg ready [msg]            clear the mid-change flag
-//   cc-msg who                    show what every session is working on
-//   cc-msg list                   live sessions with project paths
-//   cc-msg history [n]            recent traffic
-//   cc-msg name <handle>          give this session a short descriptive name
-//   cc-msg inbox                  print undelivered messages for this session
-//   cc-msg revive <tab> [msg]     reopen a CLOSED session (claude --resume) in a new terminal
-//   cc-msg whoami                 this session's name
+// cc-msg — cross-tab coordination CLI for Claude Code.
+//   cc-msg send <tab|all> <message...>   share info (no reply expected)
+//   cc-msg ask  <tab|all> <message...>   ask a question (reply expected)
+//   cc-msg fix  <tab|all> <message...>   report a problem to fix (act + report done)
+//   cc-msg done <tab|all> <message...>   report completion (no reply expected)
+//   cc-msg list                          list live tabs
+//   cc-msg inbox                         print undelivered messages for THIS tab
+//   cc-msg history [n]                   recent bus traffic (default 20)
+//   cc-msg whoami                        print this tab's name
 const path = require('path');
 const fs = require('fs');
-const bus = require(path.join(__dirname, '..', 'lib.js'));
+const bus = require(path.join(process.env.HOME, '.claude', 'msgbus', 'lib.js'));
 
 const [cmd, ...rest] = process.argv.slice(2);
 
-// Internal: background deliverer for revive (waits until the revived session is live, then delivers).
+// Hidden subcommand: wait until a resurrected session is live, THEN deliver the
+// queued message — so it triggers a FileChanged wake and the tab actually acts on it
+// (SessionStart context injection is passive and doesn't make an idle tab respond).
 if (cmd === '__deliver') {
   const sid = rest[0];
   const tmp = rest[1];
@@ -41,95 +36,295 @@ if (cmd === '__deliver') {
   tick();
   return;
 }
-
-// CLAUDE_CODE_SESSION_ID is present in the Bash tool's environment and is the reliable identity.
-const SELF = process.env.CLAUDE_CODE_SESSION_ID || process.env.CC_SELF_SESSION || '';
+// Hidden subcommand: wait for a freshly-launched `claude` to boot, THEN type the initial
+// prompt into its terminal. A fresh interactive claude ignores a bus/inbox message until
+// the user types, so the prompt must be sent as keystrokes to actually start the task.
+if (cmd === '__spawn_seed') {
+  const term = rest[0]; const pane = rest[1]; const tmp = rest[2];
+  let prompt = ''; try { prompt = fs.readFileSync(tmp, 'utf8'); } catch {}
+  try { fs.unlinkSync(tmp); } catch {}
+  const cp = require('child_process');
+  try { cp.execSync('sleep 8'); } catch {}
+  if (prompt) {
+    if (term === 'wezterm' && pane) {
+      const WEZ = weztermBin();
+      try {
+        cp.execFileSync(WEZ, ['cli', 'send-text', '--pane-id', String(pane), '--no-paste'], { input: prompt, stdio: ['pipe', 'ignore', 'ignore'] });
+        cp.execSync('sleep 0.5');
+        cp.execFileSync(WEZ, ['cli', 'send-text', '--pane-id', String(pane), '--no-paste'], { input: '\r', stdio: ['pipe', 'ignore', 'ignore'] });
+      } catch {}
+    } else {
+      const asc = prompt.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ');
+      const script = (term === 'iterm' || term === 'iterm2')
+        ? `tell application "iTerm" to tell current session of current window to write text "${asc}"`
+        : `tell application "Terminal" to do script "${asc}" in front window`;
+      try { cp.execFileSync('osascript', ['-e', script], { stdio: 'ignore' }); } catch {}
+    }
+  }
+  return;
+}
+// CLAUDE_CODE_SESSION_ID is present in the Bash tool's environment and is the reliable
+// identity (CLAUDE_ENV_FILE exports do not propagate into the Bash tool shell).
+// CODEX_THREAD_ID is the Codex CLI equivalent — Codex injects it into every tool shell,
+// and it equals the session_id its hooks register the tab under, so a Codex tab resolves
+// its own identity the same way. Order: Claude env, then Codex env, then explicit override.
+const SELF = process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID || process.env.CC_SELF_SESSION || '';
+// Resolve own name from the live registry so renames are reflected; fall back to env.
 const FROM = (SELF && bus.labelOf(SELF)) || process.env.CC_TAB || 'unknown';
 const INTENTS = { send: 'info', info: 'info', ask: 'ask', fix: 'fix', done: 'done', sync: 'sync' };
 
 function die(msg) { process.stderr.write(msg + '\n'); process.exit(1); }
 
-// Open a new OS terminal that resumes a closed session's conversation.
-// Portable: macOS Terminal.app via osascript; otherwise print the command to run.
-function openTerminal(cwd, sid) {
-  const dir = String(cwd || process.env.HOME);
-  const shellCmd = `cd '${dir.replace(/'/g, `'\\''`)}' && claude --resume ${sid}`;
-  if (process.platform === 'darwin') {
-    const { execFileSync } = require('child_process');
-    const asc = shellCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    execFileSync('osascript', ['-e', `tell application "Terminal"\n  activate\n  do script "${asc}"\nend tell`],
-      { stdio: ['ignore', 'ignore', 'pipe'] });
-    return true;
+// Sync the WezTerm tab title to this session's current (possibly auto-updated) label.
+function syncTabTitle() {
+  const e = bus.readEntry(bus.regFile(SELF));
+  const pane = (e && e.pane) || bus.wezPane();
+  if (e && e.label && pane) {
+    try { require('child_process').execFileSync(weztermBin(), ['cli', 'set-tab-title', '--pane-id', String(pane), e.label], { stdio: 'ignore' }); } catch {}
   }
-  process.stdout.write(`Run this in a new terminal to revive it:\n  ${shellCmd}\n`);
-  return false;
 }
 
+// The interactive binary that owns a tab, by agent kind. Claude tabs run `claude`,
+// Codex tabs run `codex`. Used so spawn opens the right CLI and revive resumes with the
+// matching resume syntax (`claude --resume <sid>` vs `codex resume <sid>`).
+function agentBin(agent) { return agent === 'codex' ? 'codex' : 'claude'; }
+// Visible sender tag: Codex traffic is marked [CODEX] wherever a message/sender is shown.
+function agentTag(agent) { return agent === 'codex' ? ' [CODEX]' : ''; }
+function launchCmd(agent) { return agentBin(agent); }                       // fresh session
+function resumeCmd(agent, sid) {
+  return agent === 'codex' ? `codex resume ${sid}` : `claude --resume ${sid}`;
+}
+
+// Locate the wezterm CLI (PATH first, then the app bundle).
+function weztermBin() {
+  const { execSync } = require('child_process');
+  try { const p = execSync('command -v wezterm 2>/dev/null').toString().trim(); if (p) return p; } catch {}
+  return '/Applications/WezTerm.app/Contents/MacOS/wezterm';
+}
+
+// Directly open a FRESH claude tab when NOT inside VS Code (no cc-bus extension to pick up
+// the spawn request). Mirrors openTerminal (revive) but launches a new session and seeds
+// the initial prompt by typing it in once claude boots. Respects CC_MSG_DRYRUN.
+function spawnDirect(cwd, prompt, agent) {
+  const cp = require('child_process');
+  const term = (process.env.CC_TERMINAL || (bus.wezPane() ? 'wezterm' : 'terminal')).toLowerCase();
+  const dry = !!process.env.CC_MSG_DRYRUN;
+  const BIN = launchCmd(agent);
+  const seed = (t, pane) => {
+    if (!prompt) return;
+    if (dry) { process.stdout.write(`[dry-run] would seed prompt into ${t} pane=${pane || 'front'} ~8s after launch\n`); return; }
+    const tmp = path.join(bus.BUS, 'reviving', `spawnseed-${bus.now()}-${process.pid}.txt`);
+    try { fs.mkdirSync(path.dirname(tmp), { recursive: true }); fs.writeFileSync(tmp, prompt); } catch { return; }
+    const child = cp.spawn(process.execPath, [__filename, '__spawn_seed', t, String(pane || ''), tmp], { detached: true, stdio: 'ignore' });
+    child.unref();
+  };
+  if (term === 'wezterm') {
+    const WEZ = weztermBin();
+    const args = ['cli', 'spawn', '--cwd', cwd, '--', 'zsh', '-ic', `${BIN} || exec zsh -i`];
+    if (dry) { process.stdout.write(`[dry-run] ${WEZ} ${args.join(' ')}\n`); seed('wezterm', 'NEW'); return true; }
+    let pane = '';
+    try { pane = cp.execFileSync(WEZ, args, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); }
+    catch { return false; }
+    if (bus.wezPane()) { try { cp.execFileSync(WEZ, ['cli', 'activate-pane', '--pane-id', bus.wezPane()], { stdio: 'ignore' }); } catch {} }
+    seed('wezterm', pane);
+    return true;
+  }
+  const launch = `cd '${cwd.replace(/'/g, `'\\''`)}' && ${BIN}`;
+  const asc = launch.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const script = (term === 'iterm' || term === 'iterm2')
+    ? `tell application "iTerm"\n  activate\n  if (count of windows) = 0 then\n    create window with default profile\n  else\n    tell current window to create tab with default profile\n  end if\n  delay 0.2\n  tell current session of current window to write text "${asc}"\nend tell`
+    : `tell application "Terminal"\n  activate\n  do script "${asc}"\nend tell`;
+  if (dry) { process.stdout.write(`[dry-run] osascript:\n${script}\n`); seed(term, ''); return true; }
+  try { cp.execFileSync('osascript', ['-e', script], { stdio: ['ignore', 'ignore', 'pipe'] }); }
+  catch { return false; }
+  seed(term, '');
+  return true;
+}
+
+// Open a new terminal that resumes a dead session's conversation.
+// The message is already in its inbox; the resumed SessionStart hook delivers it.
+//   CC_TERMINAL: "wezterm" (default when run inside WezTerm — clean new TAB via `wezterm cli`)
+//              | "terminal" (Terminal.app new WINDOW — safe everywhere)
+//              | "iterm" (iTerm2 new TAB)
+//              | "terminal-tab" (Terminal.app new tab via global Cmd+T — best-effort)
+// Default auto-detects: inside a WezTerm pane (WEZTERM_PANE set) -> wezterm, else terminal.
+function openTerminal(cwd, sid, agent) {
+  const { execFileSync } = require('child_process');
+  const dir = String(cwd || process.env.HOME);
+  const term = (process.env.CC_TERMINAL || (bus.wezPane() ? 'wezterm' : 'terminal')).toLowerCase();
+  const shellCmd = `cd '${dir.replace(/'/g, `'\\''`)}' && ${resumeCmd(agent, sid)}`;
+  const ascStr = shellCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"'); // escape for AppleScript string
+
+  const run = (script) => {
+    if (process.env.CC_MSG_DRYRUN) { process.stdout.write(`[dry-run] would run osascript:\n${script}\n---\n`); return; }
+    execFileSync('osascript', ['-e', script], { stdio: ['ignore', 'ignore', 'pipe'] });
+  };
+
+  const termWindow = `tell application "Terminal"\n  activate\n  do script "${ascStr}"\nend tell`;
+
+  // WezTerm: open a clean new tab via the CLI (talks to the running WezTerm mux).
+  // No keystrokes, no focus race. Falls back to a Terminal.app window if the mux
+  // isn't reachable (e.g. WezTerm not running / sender outside WezTerm).
+  if (term === 'wezterm') {
+    const WEZ = weztermBin();
+    // Pulse the new tab's colour for ~1.6s (sets the `revive_pulse` user var, which
+    // ~/.wezterm.lua's format-tab-title turns into an animated colour), THEN resume.
+    // Runs before claude starts, so it can't corrupt claude's TUI rendering.
+    const pulse = `for i in $(seq 1 16); do printf '\\033]1337;SetUserVar=revive_pulse=%s\\007' "$(printf %s $i | base64)"; sleep 0.1; done; printf '\\033]1337;SetUserVar=revive_pulse=\\007'`;
+    // `|| exec zsh`: jeśli resume padnie, zostaw otwarty shell z błędem (nie zamykaj taba).
+    const inner = `${pulse}; ${resumeCmd(agent, sid)} || exec zsh -i`;
+    const args = ['cli', 'spawn', '--cwd', dir, '--', 'zsh', '-ic', inner];
+    if (process.env.CC_MSG_DRYRUN) { process.stdout.write(`[dry-run] would run: ${WEZ} cli spawn --cwd ${dir} -- zsh -ic '<pulse>; ${resumeCmd(agent, sid)}'\n---\n`); return; }
+    try {
+      execFileSync(WEZ, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      // Keep the user where they were — switch focus back to the sender's pane.
+      if (bus.wezPane()) {
+        try { execFileSync(WEZ, ['cli', 'activate-pane', '--pane-id', bus.wezPane()], { stdio: ['ignore', 'ignore', 'pipe'] }); } catch {}
+      }
+    } catch (e) {
+      run(termWindow); // fallback if mux unreachable
+    }
+    return;
+  }
+
+  if (term === 'iterm' || term === 'iterm2') {
+    run(`tell application "iTerm"\n  activate\n  if (count of windows) = 0 then\n    create window with default profile\n  else\n    tell current window to create tab with default profile\n  end if\n  delay 0.2\n  tell current session of current window to write text "${ascStr}"\nend tell`);
+    return;
+  }
+
+  // Opt-in tab mode. Cmd+T is a GLOBAL keystroke — if Terminal isn't actually
+  // frontmost (e.g. another app/monitor focused) it lands in the wrong app. We
+  // force Terminal frontmost and wait, but it remains best-effort.
+  if (term === 'terminal-tab') {
+    const termTab =
+      `tell application "Terminal" to activate\n` +
+      `delay 0.5\n` +
+      `tell application "System Events"\n` +
+      `  set frontmost of process "Terminal" to true\n` +
+      `  delay 0.2\n` +
+      `  keystroke "t" using command down\n` +
+      `end tell\n` +
+      `delay 0.4\n` +
+      `tell application "Terminal" to do script "${ascStr}" in front window`;
+    try { run(termTab); } catch (e) { run(termWindow); }
+    return;
+  }
+
+  // Default: new window — reliable, never steals a keystroke from another app.
+  run(termWindow);
+  return;
+}
+
+// Launch a detached background process that delivers `msg` to `sid` once it's live.
+// Active delivery (after the resumed tab arms its inbox watch) makes it actually
+// respond — unlike passive SessionStart context injection.
 function scheduleDelivery(sid, msg) {
   const { spawn } = require('child_process');
-  const tmp = path.join(bus.REVIVING, `${sid}.msg.json`);
+  const tmp = path.join(bus.BUS, 'reviving', `${sid}.msg.json`);
   try { fs.writeFileSync(tmp, JSON.stringify(msg)); } catch { return; }
   const child = spawn(process.execPath, [__filename, '__deliver', sid, tmp], { detached: true, stdio: 'ignore' });
   child.unref();
 }
 
+// Resurrect a dead tab: reopen its conversation, then deliver the message once it's alive.
 function reviveDead(d, msg) {
   if (bus.recentlyRevived(d.sessionId)) {
-    if (msg) bus.appendMessage(d.sessionId, msg);
-    process.stdout.write(`"${d.label}" is already being reopened — message queued.\n`);
+    if (msg) bus.appendMessage(d.sessionId, msg); // already reopening — just queue it
+    process.stdout.write(`"${d.label}" is already being reopened — message queued for it.\n`);
     return;
   }
   bus.markReviving(d.sessionId);
-  const opened = openTerminal(d.cwd, d.sessionId);
-  if (msg) scheduleDelivery(d.sessionId, msg);
-  if (opened) process.stdout.write(`Reopening "${d.label}" (claude --resume) in a new terminal — it will receive the message once it's up.\n`);
+  try {
+    openTerminal(d.cwd, d.sessionId, d.agent);
+    if (msg) scheduleDelivery(d.sessionId, msg);
+    process.stdout.write(`"${d.label}" was not alive — reopening it (${resumeCmd(d.agent, d.sessionId)}); it will receive the message once it's up and respond.\n`);
+  } catch (e) {
+    if (msg) bus.appendMessage(d.sessionId, msg);
+    process.stdout.write(`Queued for "${d.label}", but could not open a terminal automatically: ${e.message}\nReopen manually: cd '${d.cwd}' && ${resumeCmd(d.agent, d.sessionId)}\n`);
+  }
 }
+
+// Wake a LIVE tab by typing a short nudge into its WezTerm pane. asyncRewake nie
+// rusza w pełni bezczynnej sesji — a wpisanie prompta przez `wezterm cli send-text`
+// budzi ją zawsze. To TYLKO wybudzenie: pełna treść siedzi w skrzynce i jest
+// dostarczana DOKŁADNIE RAZ przez kursor inboxa (hook UserPromptSubmit / recv), więc
+// nudge wpisuje krótki sygnał (nie całą treść) — inaczej WezTerm dublowałby wiadomość.
+// `entry.pane` jest już rzetelny (null poza realnym WezTermem), więc to nie odpala się
+// pod VS Code i nie trafia w obcy panel.
+function nudgePane(entry, msg) {
+  const pane = entry && entry.pane;
+  if (!pane) return false;
+  try {
+    const cp = require('child_process');
+    const WEZ = weztermBin();
+    const line = `📨 nowa wiadomość koordynacyjna od "${FROM}" [${msg.intent}] — wczyta się teraz; szczegóły: cc-msg inbox`;
+    // Tekst i Enter OSOBNO: Claude przy dłuższym tekście traktuje go jak wklejkę
+    // i nie submituje na doklejony \r — osobny Enter po chwili działa jak naciśnięcie.
+    cp.execFileSync(WEZ, ['cli', 'send-text', '--pane-id', String(pane), '--no-paste'],
+      { input: line, stdio: ['pipe', 'ignore', 'ignore'] });
+    cp.execSync('sleep 0.4');
+    cp.execFileSync(WEZ, ['cli', 'send-text', '--pane-id', String(pane), '--no-paste'],
+      { input: '\r', stdio: ['pipe', 'ignore', 'ignore'] });
+    return true;
+  } catch { return false; }
+}
+
+// Agent kind of THIS sender (claude | codex), from its own registry entry — stamped on
+// every outgoing message so recipients and the dashboard can tag Codex traffic with [CODEX].
+const SELF_AGENT = (SELF && (bus.readEntry(bus.regFile(SELF)) || {}).agent) || undefined;
 
 function doSend(intent, target, text) {
   if (!target || !text) die(`usage: cc-msg ${intent === 'info' ? 'send' : intent} <tab|all> <message>`);
-  const msg = { from: FROM, fromSession: SELF, intent, text, ts: bus.now() };
+  const msg = { from: FROM, fromSession: SELF, fromAgent: SELF_AGENT, intent, text, ts: bus.now() };
   const targets = bus.resolveTargets(target, SELF);
   if (targets.length) {
-    for (const t of targets) bus.appendMessage(t.sessionId, msg);
+    for (const t of targets) {
+      // Skrzynka jest ŹRÓDŁEM PRAWDY: zawsze dopisz wiadomość (trwałe, dostarczane
+      // dokładnie raz przez kursor inboxa w hookach UserPromptSubmit / recv). Nudge to
+      // już tylko opcjonalne wybudzenie żywego panelu WezTerm — nie niesie treści, więc
+      // nie dubluje. Pod VS Code (pane=null) nudge i tak jest pomijany.
+      bus.appendMessage(t.sessionId, msg);
+      nudgePane(t, msg);
+    }
     const names = targets.map((t) => t.label);
-    bus.appendLog({ from: FROM, to: names, intent, text, ts: bus.now() });
-    process.stdout.write(`[${intent}] sent to ${targets.length} session(s): ${names.map((n) => `"${n}"`).join(', ')}\n`);
+    bus.appendLog({ from: FROM, fromAgent: SELF_AGENT, to: names, intent, text, ts: bus.now() });
+    process.stdout.write(`[${intent}] sent to ${targets.length} tab(s): ${names.map((n) => `"${n}"`).join(', ')}\n`);
     return;
   }
-  // "operator" = the human at the cc-bus dashboard (integrations/cc-bus). Not a registered
-  // session, so there's no inbox to wake — just log it so the reply shows live on the dashboard.
-  // Sessions answer the operator with: cc-msg send operator "..."
+  // "operator" = the human at the cc-bus dashboard. Not a registered tab, so there is
+  // no inbox to wake — but log it so the reply shows up live in cc-bus. This lets tabs
+  // answer the operator with: cc-msg send operator "..."
   if (String(target).toLowerCase() === 'operator') {
-    bus.appendLog({ from: FROM, to: ['operator'], intent, text, ts: bus.now() });
-    process.stdout.write(`[${intent}] -> operator (shown on the cc-bus dashboard)\n`);
+    bus.appendLog({ from: FROM, fromAgent: SELF_AGENT, to: ['operator'], intent, text, ts: bus.now() });
+    process.stdout.write(`[${intent}] -> operator (widoczne na pulpicie cc-bus)\n`);
     return;
   }
-  // Not live — is it a closed session we know how to revive?
+  // No live tab — is it a dead (closed) tab we can resurrect?
   const dead = bus.resolveDead(target, SELF);
   if (!dead.length) {
     const tabs = bus.listTabs().filter((t) => t.sessionId !== SELF).map((t) => t.label);
-    die(`No session matches "${target}". Live: ${tabs.join(', ') || '(none)'}`);
+    die(`No tab matches "${target}". Live tabs: ${tabs.join(', ') || '(none)'}`);
   }
-  // Non-automatic: queue + tell the user to revive it explicitly.
-  bus.appendMessage(dead[0].sessionId, msg);
-  bus.appendLog({ from: FROM, to: [`${dead[0].label}(offline)`], intent, text, ts: bus.now() });
-  process.stdout.write(`"${dead[0].label}" is offline — message queued.\nReopen it with:  cc-msg revive ${dead[0].label}\n`);
+  bus.appendLog({ from: FROM, fromAgent: SELF_AGENT, to: [`${dead[0].label}(dead)`], intent, text, ts: bus.now() });
+  process.stdout.write(`[${intent}] target "${dead[0].label}" is not alive.\n`);
+  reviveDead(dead[0], msg);
 }
 
 function showBoard() {
   const tabs = bus.listTabs();
-  if (!tabs.length) { process.stdout.write('No live sessions.\n'); return; }
+  if (!tabs.length) { process.stdout.write('No live tabs.\n'); return; }
   // ID-first (peers address each other by id) + Claude's own tab title + project + status,
-  // so you can tell WHICH session is which without renaming any terminal tabs.
+  // so you can tell WHICH tab is which without renaming any terminal tabs.
   for (const t of tabs) {
     const id = t.id || (t.label || '').split('-')[0];
     const title = bus.aiTitle(t.cwd, t.sessionId) || (t.label || id);
-    const proj = path.basename(t.cwd || '');
+    const proj = require('path').basename(t.cwd || '');
     const me = t.sessionId === SELF ? ' (you)' : '';
     const age = t.statusTs ? `  [${Math.round((bus.now() - t.statusTs) / 1000)}s ago]` : '';
-    const flag = t.unstable ? '  ! MID-CHANGE' : '';
+    const flag = t.unstable ? '  ⚠ MID-CHANGE' : '';
     const status = t.status ? `  — ${t.status}` : '';
-    process.stdout.write(`${id}  ${title}  (${proj})${me}${flag}${status}${age}\n`);
+    const kind = t.agent && t.agent !== 'claude' ? `  [${t.agent}]` : '';
+    process.stdout.write(`${id}  ${title}  (${proj})${kind}${me}${flag}${status}${age}\n`);
   }
 }
 
@@ -139,57 +334,15 @@ if (key in INTENTS) {
   doSend(INTENTS[key], rest[0], rest.slice(1).join(' ').trim());
 } else if (key === 'status') {
   const text = rest.join(' ').trim();
-  if (!text) { showBoard(); }
-  else {
-    if (!SELF) die('Not inside a Claude Code session (CLAUDE_CODE_SESSION_ID unset).');
-    if (!bus.setStatus(SELF, text, false)) die('This session is not registered yet.');
-    bus.appendLog({ from: FROM, to: ['*board'], intent: 'status', text, ts: bus.now() });
-    process.stdout.write(`Status: ${text}\n`);
-  }
-} else if (key === 'busy') {
-  const text = rest.join(' ').trim() || 'mid-change';
-  if (!SELF) die('Not inside a Claude Code session.');
-  if (!bus.setStatus(SELF, text, true, true)) die('This session is not registered yet.');
-  bus.appendLog({ from: FROM, to: ['*board'], intent: 'busy', text, ts: bus.now() });
-  process.stdout.write(`Marked MID-CHANGE: ${text}\n`);
-} else if (key === 'ready' || key === 'stable') {
-  const text = rest.join(' ').trim() || 'stable';
-  if (!SELF) die('Not inside a Claude Code session.');
-  if (!bus.setStatus(SELF, text, false, true)) die('This session is not registered yet.');
-  bus.appendLog({ from: FROM, to: ['*board'], intent: 'ready', text, ts: bus.now() });
-  process.stdout.write(`Marked stable: ${text}\n`);
-} else if (key === 'who' || key === 'board') {
-  showBoard();
-} else if (key === 'list' || key === 'tabs') {
-  const tabs = bus.listTabs();
-  if (!tabs.length) process.stdout.write('No live sessions.\n');
-  for (const t of tabs) {
-    const age = Math.round((bus.now() - (t.ts || 0)) / 1000);
-    const me = t.sessionId === SELF ? '  <- this session' : '';
-    const st = t.status ? `  | ${t.unstable ? '! MID-CHANGE — ' : ''}${t.status}` : '';
-    process.stdout.write(`${t.label}\t${t.cwd}\t(seen ${age}s ago)${me}${st}\n`);
-  }
-} else if (key === 'history' || key === 'log') {
-  const rows = bus.readLog(parseInt(rest[0], 10) || 20);
-  if (!rows.length) process.stdout.write('No traffic yet.\n');
-  for (const r of rows) {
-    const when = r.ts ? new Date(r.ts).toLocaleTimeString() : '';
-    process.stdout.write(`${when} [${r.intent}] ${r.from} -> ${(r.to || []).join(',')}: ${r.text}\n`);
-  }
-} else if (key === 'name' || key === 'rename') {
-  const arg = rest.join(' ').trim();
-  if (!arg) die('usage: cc-msg name "<role-prefix>-<activity>"  e.g. fe-checkout');
-  if (!SELF) die('Not inside a Claude Code session.');
-  const final = bus.applyName(SELF, arg);
-  if (!final) die('This session is not registered yet.');
-  process.stdout.write(`This session is now "${final}" (address by id: ${final.split('-')[0]}).\n`);
-} else if (key === 'inbox') {
-  if (!SELF) die('Not inside a Claude Code session.');
-  const msgs = bus.drainInbox(SELF);
-  if (!msgs.length) process.stdout.write('Inbox empty.\n');
-  for (const m of msgs) {
-    const when = m.ts ? new Date(m.ts).toLocaleTimeString() : '';
-    process.stdout.write(`[${m.intent || 'info'}] from "${m.from}"${when ? ` at ${when}` : ''}: ${m.text}\n`);
+  if (text) {
+    if (!SELF) die('CC_SELF_SESSION not set — run this inside a Claude Code session.');
+    if (!bus.setStatus(SELF, text, false)) die('This tab is not registered yet.');
+    syncTabTitle();   // nazwa mogła się zmienić wg statusu → odśwież tytuł taba
+    bus.appendLog({ from: FROM, fromAgent: SELF_AGENT, to: ['*board'], intent: 'status', text, ts: bus.now() });
+    process.stdout.write(`Status updated: ${text}\n`);
+  } else {
+    // no arg => show the board
+    showBoard();
   }
 } else if (key === 'revive') {
   const targetName = rest[0];
@@ -198,17 +351,19 @@ if (key in INTENTS) {
   const dead = bus.resolveDead(targetName, SELF);
   if (!dead.length) {
     const arch = bus.listArchive().map((e) => e.label);
-    die(`No closed session matches "${targetName}". Archived: ${arch.join(', ') || '(none)'}`);
+    die(`No dead tab matches "${targetName}". (Live tabs are reached with send/ask/fix.) Archived: ${arch.join(', ') || '(none)'}`);
   }
-  reviveDead(dead[0], text ? { from: FROM, fromSession: SELF, intent: 'info', text, ts: bus.now() } : null);
+  const msg = text ? { from: FROM, fromSession: SELF, intent: 'info', text, ts: bus.now() } : null;
+  reviveDead(dead[0], msg);
 } else if (key === 'spawn' || key === 'open') {
   // cc-msg spawn [--cwd <dir>] [--resume <sid>] [prompt...]
-  //   Drop a request the cc-bus VS Code integration picks up to open a NEW terminal running
-  //   claude (optionally resuming a session and/or seeding an initial prompt). This only
-  //   writes a queue file — opening the terminal is done by integrations/vscode-cc-bus-waker.
+  //   Ask the VS Code extension (cc-bus-waker) to open a NEW integrated terminal running
+  //   claude — optionally resuming a session and/or seeding an initial prompt. Only the
+  //   editor can open its own terminals, so this drops a request the extension picks up.
+  const fs = require('fs');
   const a = rest.slice();
-  // NOTE: spawn is EXECUTIVE — every non-flag arg becomes the new tab's prompt. Catch --help
-  // here, else it would open a tab whose prompt is the literal "--help".
+  // NOTE: spawn is EXECUTIVE — every non-flag arg becomes the new tab's prompt. So `--help`
+  // must be caught here, else it'd open a tab with the literal prompt "--help".
   if (a.includes('--help') || a.includes('-h') || a.includes('help')) {
     process.stdout.write(
       'cc-msg spawn — open a NEW claude tab (via the cc-bus VS Code integration)\n' +
@@ -220,44 +375,193 @@ if (key in INTENTS) {
       '  WARNING: spawn has no dry-run — any arg you pass becomes the prompt and a tab opens.\n');
     process.exit(0);
   }
-  let cwd = null, resume = null, watch = false;
+  let cwd = null, resume = null, watch = false, agent = null;
   const promptParts = [];
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--cwd' && a[i + 1]) { cwd = a[++i]; }
     else if (a[i] === '--resume' && a[i + 1]) { resume = a[++i]; }
     else if (a[i] === '--watch') { watch = true; }
+    else if (a[i] === '--codex') { agent = 'codex'; }
+    else if (a[i] === '--claude') { agent = 'claude'; }
     else { promptParts.push(a[i]); }
   }
+  // New tab inherits the spawning tab's agent kind unless overridden by --codex/--claude,
+  // so a Codex tab spawns another Codex tab (and resumes with `codex resume`), not claude.
+  if (!agent) { const se = SELF ? bus.readEntry(bus.regFile(SELF)) : null; agent = (se && se.agent) || 'claude'; }
   let prompt = promptParts.join(' ').trim();
   const myId = (FROM || '').split('-')[0];
   if (watch) {
-    // mutual watcher: the new tab arms a background `cc-msg watch` so we wake each other's messages
-    const note = `[COORDINATION with ${myId}] Arm a watcher on your inbox NOW: run "cc-msg watch" as a BACKGROUND task (run_in_background) — Claude Code re-invokes you when it exits with a message; RE-ARM it after handling each message. Address me by id ${myId}.`;
+    // mutual watcher: the new tab arms a background cc-msg watch so we wake each other's messages
+    const note = `[KOORDYNACJA z ${myId}] NATYCHMIAST uzbrój watcher na swoją skrzynkę: uruchom "cc-msg watch" jako zadanie w TLE (run_in_background) — Claude Code obudzi Cię gdy przyjdzie wiadomość; po obsłużeniu każdej wiadomości uzbrój watcher PONOWNIE. Adresuj mnie po id ${myId}.`;
     prompt = prompt ? `${prompt}\n\n${note}` : note;
   }
-  if (!cwd) { const e = SELF ? bus.readEntry(bus.regFile(SELF)) : null; cwd = (e && e.cwd) || process.cwd(); }
+  if (!cwd) {
+    const e = SELF ? bus.readEntry(bus.regFile(SELF)) : null;
+    cwd = (e && e.cwd) || process.cwd();
+  }
+  // Outside VS Code no cc-bus extension will consume the request-file — open the tab
+  // directly (WezTerm / Terminal.app / iTerm), the same way `revive` does. In VS Code keep
+  // the request-file path (the extension integrates rename + session restore).
+  const inVSCode = (process.env.TERM_PROGRAM || '').toLowerCase() === 'vscode'
+    || !!process.env.VSCODE_PID || !!process.env.VSCODE_INJECTION;
+  if (!inVSCode) {
+    if (resume) {
+      try { openTerminal(cwd, resume, agent); process.stdout.write(`[spawn] otwarto (${resumeCmd(agent, resume)}) bezpośrednio w ${cwd}.\n`); process.exit(0); } catch {}
+    } else if (spawnDirect(cwd, prompt, agent)) {
+      process.stdout.write(`[spawn] otwarto nowy tab ${agentBin(agent)} bezpośrednio w ${cwd}${prompt ? ' + prompt startowy (wpisany po starcie)' : ''}.\n`
+        + (watch ? `KOORDYNACJA: uzbrój też SWÓJ watcher w tle (cc-msg watch, run_in_background).\n` : ''));
+      process.exit(0);
+    }
+    // direct launch failed → fall through to the request-file path
+  }
   const dir = path.join(bus.BUS, 'spawn');
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-  const req = { cwd, resume: resume || null, prompt: prompt || null, from: FROM, ts: bus.now() };
+  const req = { cwd, resume: resume || null, prompt: prompt || null, agent, from: FROM, ts: bus.now() };
   try { fs.writeFileSync(path.join(dir, `${bus.now()}-${process.pid}.json`), JSON.stringify(req)); }
-  catch (e) { die(`Could not write spawn request: ${e.message}`); }
+  catch (e) { die(`Nie udało się zapisać prośby o spawn: ${e.message}`); }
   process.stdout.write(
-    `[spawn] requested a new claude tab in ${cwd}${resume ? ` (resume ${resume})` : ''}${prompt ? ' + initial prompt' : ''}.\n` +
-    `Handled by the cc-bus VS Code integration in the window open on that project. The new tab appears on the bus shortly.\n` +
-    (watch ? `COORDINATION: the new tab will arm its watcher. NOW arm YOURS too — run "cc-msg watch" as run_in_background and re-arm after each message; you'll wake each other.\n` : ''));
+    `[spawn] zlecono nowy tab ${agentBin(agent)} w ${cwd}${resume ? ` (resume ${resume})` : ''}${prompt ? ' + prompt startowy' : ''}.\n` +
+    `Zrobi to rozszerzenie VS Code w oknie tego projektu (musi być otwarte). Nowy tab pojawi się na magistrali za chwilę — potem adresuj go normalnie.\n` +
+    (watch ? `KOORDYNACJA: nowy tab uzbroi watcher. TERAZ uzbrój też SWÓJ w tle: uruchom "cc-msg watch" jako run_in_background i re-arm po każdej wiadomości — obudzicie się nawzajem.\n` : ''));
+} else if (key === 'name' || key === 'rename') {
+  const arg = rest.join(' ').trim();
+  if (!arg) die('usage: cc-msg name "<role>-<main-task>"  e.g. fe-admin, be-orders (MAIN task, not a sub-step)');
+  if (!SELF) die('CC_SELF_SESSION not set — run this inside a Claude Code session.');
+  const final = bus.applyName(SELF, arg);   // name = <id>-<role>-<activity>, activity = main task
+  if (!final) die('This tab is not registered yet.');
+  // Tytuł taba WezTerm = złożona nazwa (tab == nazwa na czacie).
+  const e = bus.readEntry(bus.regFile(SELF));
+  const pane = (e && e.pane) || bus.wezPane();
+  if (pane) {
+    try { require('child_process').execFileSync(weztermBin(), ['cli', 'set-tab-title', '--pane-id', String(pane), final], { stdio: 'ignore' }); } catch {}
+  }
+  process.stdout.write(`This tab is now "${final}" (address by id: ${final.split('-')[0]}).\n`);
+} else if (key === 'busy') {
+  const text = rest.join(' ').trim() || 'mid-change';
+  if (!SELF) die('CC_SELF_SESSION not set — run this inside a Claude Code session.');
+  if (!bus.setStatus(SELF, text, true, true)) die('This tab is not registered yet.');
+  bus.appendLog({ from: FROM, fromAgent: SELF_AGENT, to: ['*board'], intent: 'busy', text, ts: bus.now() });
+  process.stdout.write(`Marked MID-CHANGE (peers warned shared build/types may break): ${text}\n`);
+} else if (key === 'ready' || key === 'stable') {
+  const text = rest.join(' ').trim() || 'stable';
+  if (!SELF) die('CC_SELF_SESSION not set — run this inside a Claude Code session.');
+  if (!bus.setStatus(SELF, text, false, true)) die('This tab is not registered yet.');
+  bus.appendLog({ from: FROM, fromAgent: SELF_AGENT, to: ['*board'], intent: 'ready', text, ts: bus.now() });
+  process.stdout.write(`Marked stable: ${text}\n`);
+} else if (key === 'who' || key === 'board') {
+  showBoard();
+} else if (key === 'list' || key === 'tabs') {
+  const tabs = bus.listTabs();
+  if (!tabs.length) { process.stdout.write('No live tabs registered.\n'); }
+  for (const t of tabs) {
+    const age = Math.round((bus.now() - (t.ts || 0)) / 1000);
+    const me = t.sessionId === SELF ? '  <- this tab' : '';
+    const st = t.status ? `  | ${t.unstable ? '⚠ MID-CHANGE — ' : ''}${t.status}` : '';
+    process.stdout.write(`${t.label}\t${t.cwd}\t(seen ${age}s ago)${me}${st}\n`);
+  }
+} else if (key === 'inbox') {
+  if (!SELF) die('CC_SELF_SESSION not set — run this inside a Claude Code session.');
+  const msgs = bus.drainInbox(SELF);
+  if (!msgs.length) { process.stdout.write('Inbox empty.\n'); }
+  for (const m of msgs) {
+    const when = m.ts ? new Date(m.ts).toLocaleTimeString() : '';
+    process.stdout.write(`[${m.intent || 'info'}] from "${m.from}"${agentTag(m.fromAgent)}${when ? ` at ${when}` : ''}: ${m.text}\n`);
+  }
+} else if (key === 'history' || key === 'log') {
+  const n = parseInt(rest[0], 10) || 20;
+  const rows = bus.readLog(n);
+  if (!rows.length) { process.stdout.write('No traffic yet.\n'); }
+  for (const r of rows) {
+    const when = r.ts ? new Date(r.ts).toLocaleTimeString() : '';
+    process.stdout.write(`${when} [${r.intent}] ${r.from}${agentTag(r.fromAgent)} -> ${(r.to || []).join(',')}: ${r.text}\n`);
+  }
+} else if (key === 'transcript' || key === 'export') {
+  // Render the bus log as a clean Markdown transcript — marketing/case-study material.
+  // Flags: --grep <word>  --since <Nm|Nh|Nd>  --last <N>  --all (include status/board noise)
+  const args = rest.slice();
+  const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
+  const has = (name) => args.includes(name);
+  const grep = flag('--grep');
+  const last = parseInt(flag('--last'), 10) || 0;
+  const sinceRaw = flag('--since');
+  let sinceMs = 0;
+  if (sinceRaw) {
+    const m = sinceRaw.match(/^(\d+)([mhd])$/);
+    if (m) sinceMs = bus.now() - (+m[1]) * ({ m: 60000, h: 3600000, d: 86400000 }[m[2]]);
+  }
+  let rows = bus.readLog(100000); // full log
+  if (!has('--all')) rows = rows.filter((r) => !(r.to || []).some((t) => String(t).startsWith('*'))); // drop board/status
+  if (sinceMs) rows = rows.filter((r) => (r.ts || 0) >= sinceMs);
+  if (grep) { const g = grep.toLowerCase(); rows = rows.filter((r) => `${r.from} ${(r.to || []).join(' ')} ${r.text}`.toLowerCase().includes(g)); }
+  if (last) rows = rows.slice(-last);
+  if (!rows.length) { process.stdout.write('No matching messages.\n'); }
+  else {
+    process.stdout.write(`# Agent coordination transcript\n\n`);
+    for (const r of rows) {
+      const t = r.ts ? new Date(r.ts).toLocaleString() : '';
+      process.stdout.write(`- \`${t}\` **${r.from}${agentTag(r.fromAgent)}** → **${(r.to || []).join(', ')}** _[${r.intent}]_: ${r.text}\n`);
+    }
+    process.stdout.write(`\n_${rows.length} messages._\n`);
+  }
+} else if (key === 'watch') {
+  // Block until this tab's inbox grows past the delivered cursor, then print the new
+  // messages and exit. Meant to be launched as a BACKGROUND Bash task: Claude Code
+  // re-invokes the agent when a backgrounded command exits, so this is the async-wake
+  // for terminals (VS Code) where the WezTerm send-text nudge isn't available.
+  if (!SELF) die('CC_SELF_SESSION not set — run this inside a Claude Code session.');
+  const ib = bus.inboxFile(SELF);
+  // IMPORTANT: the watcher tracks its OWN position (.watchpos), NOT the board's
+  // delivery cursor (.cursor). Otherwise the background watcher would drain the cursor
+  // before the UserPromptSubmit board hook could show the message to the human — so the
+  // user would stop seeing incoming messages. Two independent positions: watcher wakes
+  // the agent, board shows the user; each sees every message.
+  const watchPosFile = ib.replace(/\.jsonl$/, '.watchpos');
+  const lineCount = () => { try { return fs.readFileSync(ib, 'utf8').split('\n').filter(Boolean).length; } catch { return 0; } };
+  const base = lineCount();
+  try { fs.writeFileSync(watchPosFile, String(base)); } catch {}
+  const maxTicks = parseInt(rest[0], 10) || 600; // 600 * 5s = 50 min, then exit so the agent can re-arm
+  let i = 0;
+  const tick = () => {
+    const cur = lineCount();
+    if (cur > base) {
+      let msgs = [];
+      try {
+        msgs = fs.readFileSync(ib, 'utf8').split('\n').filter(Boolean).slice(base)
+          .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      } catch {}
+      try { fs.writeFileSync(watchPosFile, String(cur)); } catch {}
+      process.stdout.write(`📨 ${msgs.length} nowa wiadomość koordynacyjna — tab obudzony:\n`);
+      for (const m of msgs) {
+        const when = m.ts ? new Date(m.ts).toLocaleTimeString() : '';
+        process.stdout.write(`  • [${(m.intent || 'info').toUpperCase()}] od "${m.from || 'unknown'}"${when ? ` (${when})` : ''}: ${m.text}\n`);
+      }
+      process.stdout.write(`\nObsłuż wg reguł magistrali, odpisz przez cc-msg, i UZBRÓJ PONOWNIE watcher w tle: cc-msg watch\n`);
+      process.exit(0);
+    }
+    if (++i >= maxTicks) { process.stdout.write('cc-msg watch: 50 min bez nowych wiadomości — uzbrój ponownie (cc-msg watch w tle).\n'); process.exit(0); }
+    setTimeout(tick, 5000);
+  };
+  tick();
 } else if (key === 'whoami') {
   process.stdout.write(`${FROM}${SELF ? ` (${SELF})` : ''}\n`);
 } else {
   process.stdout.write(
-    'cc-chat — talk between Claude Code sessions\n' +
-    '  cc-msg send <tab|all> <msg>   share info            cc-msg ask  <tab|all> <msg>   ask (reply expected)\n' +
-    '  cc-msg fix  <tab|all> <msg>   report a problem      cc-msg sync <tab|all> <msg>   cross-side change\n' +
-    '  cc-msg done <tab|all> <msg>   report completion     cc-msg status <msg>           publish your focus\n' +
-    '  cc-msg busy <msg>             warn: mid-change      cc-msg ready [msg]            clear mid-change\n' +
-    '  cc-msg who                    who is doing what     cc-msg list                   live sessions + paths\n' +
-    '  cc-msg history [n]            recent traffic        cc-msg name <handle>          name this session\n' +
-    '  cc-msg inbox                  undelivered for you   cc-msg revive <tab> [msg]     reopen a closed session\n' +
-    '  cc-msg spawn [--resume sid] [prompt]   open a NEW claude tab (needs the cc-bus VS Code integration)\n' +
-    '  cc-msg whoami                 your name\n'
+    'cc-msg — Claude Code cross-tab coordination\n' +
+    '  cc-msg send <tab|all> <msg>   share info (no reply expected)\n' +
+    '  cc-msg ask  <tab|all> <msg>   ask a question (reply expected)\n' +
+    '  cc-msg fix  <tab|all> <msg>   report a problem to fix (act + report done)\n' +
+    '  cc-msg done <tab|all> <msg>   report completion (no reply expected)\n' +
+    '  cc-msg name <handle>          give this tab a short descriptive name\n' +
+    '  cc-msg sync <tab|all> <msg>   "I changed X, adapt your side" — cross-side hand-off\n' +
+    '  cc-msg revive <tab> [msg]     reopen a CLOSED tab (claude --resume) + deliver msg\n' +
+    '  cc-msg spawn [--cwd d] [--resume sid] [prompt]  open a NEW claude tab (VS Code ext)\n' +
+    '  cc-msg status <msg>           set what you are working on (peers see it)\n' +
+    '  cc-msg busy <msg>             mark mid-change: warn peers shared build/types may break\n' +
+    '  cc-msg ready [msg]            clear the mid-change flag\n' +
+    '  cc-msg who                    show what every tab is working on\n' +
+    '  cc-msg list                   list live tabs (with project paths)\n' +
+    '  cc-msg inbox                  undelivered messages for this tab\n' +
+    '  cc-msg history [n]            recent bus traffic\n' +
+    '  cc-msg whoami                 this tab\'s name\n'
   );
 }

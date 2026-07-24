@@ -79,6 +79,43 @@ if (!cfg.permissions.allow.includes('Bash(cc-msg *)')) {
 fs.writeFileSync(SETTINGS, JSON.stringify(cfg, null, 2));
 log(`✓ wrote ${SETTINGS}`);
 
+// 3b. optional: install cc-chat into Codex CLI too (if ~/.codex exists). Codex has the same
+// hook model as Claude Code (SessionStart/SessionEnd, payload session_id+cwd, hookSpecificOutput
+// output). We install ONLY SessionStart (register + lean, once-per-session protocol) and
+// SessionEnd (deregister). We DELIBERATELY skip UserPromptSubmit: injecting the board every
+// turn would burn tokens, so a Codex tab WRITES freely but READS on demand (cc-msg inbox / who
+// / watch). Existing hooks in ~/.codex/hooks.json (e.g. node-terminal) are preserved.
+const CODEX_HOME = process.env.CODEX_HOME || path.join(HOME, '.codex');
+if (fs.existsSync(CODEX_HOME)) {
+  const CODEX_HOOKS = path.join(CODEX_HOME, 'hooks.json');
+  let cx = { hooks: {} };
+  if (fs.existsSync(CODEX_HOOKS)) {
+    try { cx = JSON.parse(fs.readFileSync(CODEX_HOOKS, 'utf8')); }
+    catch (e) { log(`✗ ${CODEX_HOOKS} is not valid JSON — skipping Codex hook merge: ${e.message}`); cx = null; }
+    if (cx) { fs.copyFileSync(CODEX_HOOKS, CODEX_HOOKS + '.bak'); log(`✓ backed up Codex hooks -> ${CODEX_HOOKS}.bak`); }
+  }
+  if (cx) {
+    cx.hooks = cx.hooks || {};
+    const START = `${NODE} ${path.join(REPO, 'hooks', 'cc-msg-start.js')} codex`;
+    const END = `${NODE} -e 'const fs=require("fs"),p=require("path");let s="";try{s=fs.readFileSync(0,"utf8")}catch(e){};try{const j=JSON.parse(s||"{}");if(j.session_id)fs.unlinkSync(p.join(process.env.HOME,".claude/msgbus/registry",j.session_id+".json"))}catch(e){}'`;
+    function addCodexHook(event, command) {
+      cx.hooks[event] = cx.hooks[event] || [];
+      const present = cx.hooks[event].some((g) => (g.hooks || []).some((h) => (h.command || '').includes('cc-msg-start.js') || (h.command || '').includes('msgbus/registry')));
+      if (present) { log(`= Codex ${event} already has a cc-chat hook (skipped)`); return; }
+      cx.hooks[event].push({ hooks: [{ type: 'command', command }] });
+      log(`✓ added Codex ${event} hook`);
+    }
+    addCodexHook('SessionStart', START);
+    addCodexHook('SessionEnd', END);
+    fs.writeFileSync(CODEX_HOOKS, JSON.stringify(cx, null, 2));
+    log(`✓ wrote ${CODEX_HOOKS}`);
+    log('  ⚠ Codex marks new hooks "Untrusted" — approve them ONCE on your next interactive `codex` launch.');
+    log('  Codex tabs WRITE freely (cc-msg send/status) and READ on demand (cc-msg inbox / who / watch).');
+  }
+} else {
+  log('i Codex CLI not detected (~/.codex missing) — skipping Codex integration. Install Codex, then re-run setup.js.');
+}
+
 // 4. optional: install the cc-bus VS Code integration (wake idle tabs + cc-msg spawn)
 const EXT_SRC = path.join(REPO, 'integrations', 'vscode-cc-bus-waker');
 const EXT_ROOT = path.join(HOME, '.vscode', 'extensions');
