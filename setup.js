@@ -34,6 +34,7 @@ function linkBin(src, name) {
 }
 linkBin(CC, 'cc-msg');
 linkBin(CB, 'cc-bus');
+linkBin(CB, 'cc-chat');   // `cc-chat` = the UI dashboard, matching the project name (alias of cc-bus)
 if (!(process.env.PATH || '').split(':').includes(BIN_DIR)) {
   log(`! ${BIN_DIR} is not on your PATH — add to your shell rc:\n    export PATH="$HOME/.local/bin:$PATH"`);
 }
