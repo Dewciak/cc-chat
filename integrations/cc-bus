@@ -23,7 +23,7 @@ const path = require('path');
 const readline = require('readline');
 const cp = require('child_process');
 
-const BUS = path.join(os.homedir(), '.cc-chat', 'bus');
+const BUS = path.join(os.homedir(), '.claude', 'msgbus');   // must match lib.js BUS
 const LOG = path.join(BUS, 'log.jsonl');
 const REG = path.join(BUS, 'registry');
 
