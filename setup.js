@@ -39,6 +39,18 @@ if (!(process.env.PATH || '').split(':').includes(BIN_DIR)) {
   log(`! ${BIN_DIR} is not on your PATH — add to your shell rc:\n    export PATH="$HOME/.local/bin:$PATH"`);
 }
 
+// 2b. link lib.js into the bus dir — bin/cc-msg and the hooks require it from
+// ~/.claude/msgbus/lib.js (a fixed path, so they work no matter where the repo lives)
+const BUS_DIR = path.join(HOME, '.claude', 'msgbus');
+fs.mkdirSync(BUS_DIR, { recursive: true });
+const libLink = path.join(BUS_DIR, 'lib.js');
+try { fs.unlinkSync(libLink); } catch {}
+try { fs.symlinkSync(path.join(REPO, 'lib.js'), libLink); log(`✓ linked lib.js -> ${libLink}`); }
+catch (e) {
+  try { fs.copyFileSync(path.join(REPO, 'lib.js'), libLink); log(`✓ copied lib.js -> ${libLink} (symlink failed: ${e.message})`); }
+  catch (e2) { log(`✗ could not install lib.js into ${BUS_DIR}: ${e2.message}`); process.exit(1); }
+}
+
 // 3. merge hooks + permission into settings.json
 let cfg = {};
 if (fs.existsSync(SETTINGS)) {
