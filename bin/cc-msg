@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 // cc-msg — cross-tab coordination CLI for Claude Code.
-//   cc-msg send <tab|all> <message...>   share info (no reply expected)
-//   cc-msg ask  <tab|all> <message...>   ask a question (reply expected)
-//   cc-msg fix  <tab|all> <message...>   report a problem to fix (act + report done)
-//   cc-msg done <tab|all> <message...>   report completion (no reply expected)
+//   cc-msg send <tab> <message...>       share info (no reply expected)
+//   cc-msg ask  <tab> <message...>       ask a question (reply expected)
+//   cc-msg fix  <tab> <message...>       report a problem to fix (act + report done)
+//   cc-msg done <tab> <message...>       report completion (no reply expected)
+//   Address ONE tab by id. "all"/"everyone"/"proj:x" and any fan-out beyond FANOUT_LIMIT
+//   recipients are REFUSED unless you pass --broadcast (see BROADCAST GUARD below).
 //   cc-msg list                          list live tabs
 //   cc-msg inbox                         print undelivered messages for THIS tab
 //   cc-msg history [n]                   recent bus traffic (default 20)
@@ -74,6 +76,39 @@ const FROM = (SELF && bus.labelOf(SELF)) || process.env.CC_TAB || 'unknown';
 const INTENTS = { send: 'info', info: 'info', ask: 'ask', fix: 'fix', done: 'done', sync: 'sync' };
 
 function die(msg) { process.stderr.write(msg + '\n'); process.exit(1); }
+
+// ── BROADCAST GUARD ────────────────────────────────────────────────────────────
+// A broadcast lands in EVERY peer's inbox and wakes each of them mid-task. Every woken
+// tab pays a full context re-read (its own transcript cache) just to absorb one FYI —
+// so one careless `send all` costs more tokens than the whole task that produced it,
+// and it derails work that has nothing to do with the message. Broadcasts are therefore
+// OPT-IN: they require an explicit --broadcast flag. Default to naming the 1-2 tabs that
+// actually need the information (cc-msg who tells you who they are).
+const BROADCAST_WORDS = new Set(['all', '@all', '*', 'everyone', 'global', 'all-projects', '*global', 'all!']);
+const FANOUT_LIMIT = 2;   // more recipients than this = broadcast, flag required
+
+function isBroadcastWord(name) {
+  const n = String(name || '').toLowerCase();
+  return BROADCAST_WORDS.has(n) || n.startsWith('proj:') || n.startsWith('project:');
+}
+
+function refuseBroadcast(intent, target, count) {
+  const who = count ? `${count} tab(s)` : 'every live tab';
+  die(
+    `REFUSED: "${target}" would deliver this ${intent} to ${who}.\n` +
+    `Broadcasting wakes every peer mid-task and burns their context — do NOT use it for FYI,\n` +
+    `progress notes, "heads up I touched X" or anything a specific tab did not ask for.\n` +
+    `\n` +
+    `Do this instead:\n` +
+    `  1. cc-msg who                       — find the tab(s) whose focus actually covers this\n` +
+    `  2. cc-msg ${intent === 'info' ? 'send' : intent} <id> "..."            — one message per tab that truly needs it (usually 1)\n` +
+    `  3. nobody specific needs it?        — then it does not need to be sent at all;\n` +
+    `                                        put it in the project CLAUDE.md / commit message\n` +
+    `\n` +
+    `Genuinely everyone-affecting (shared build/API/schema broken or changed under them)?\n` +
+    `Only then: cc-msg ${intent === 'info' ? 'send' : intent} ${target} --broadcast "..."`
+  );
+}
 
 // Sync the WezTerm tab title to this session's current (possibly auto-updated) label.
 function syncTabTitle() {
@@ -273,10 +308,13 @@ function nudgePane(entry, msg) {
 // every outgoing message so recipients and the dashboard can tag Codex traffic with [CODEX].
 const SELF_AGENT = (SELF && (bus.readEntry(bus.regFile(SELF)) || {}).agent) || undefined;
 
-function doSend(intent, target, text) {
+function doSend(intent, target, text, broadcastOk) {
   if (!target || !text) die(`usage: cc-msg ${intent === 'info' ? 'send' : intent} <tab|all> <message>`);
+  if (!broadcastOk && isBroadcastWord(target)) refuseBroadcast(intent, target, 0);
   const msg = { from: FROM, fromSession: SELF, fromAgent: SELF_AGENT, intent, text, ts: bus.now() };
   const targets = bus.resolveTargets(target, SELF);
+  // Substring matching can fan out too ("f-" hitting a dozen tabs) — same cost, same guard.
+  if (!broadcastOk && targets.length > FANOUT_LIMIT) refuseBroadcast(intent, target, targets.length);
   if (targets.length) {
     for (const t of targets) {
       // Skrzynka jest ŹRÓDŁEM PRAWDY: zawsze dopisz wiadomość (trwałe, dostarczane
@@ -331,7 +369,11 @@ function showBoard() {
 const key = (cmd || '').toLowerCase();
 
 if (key in INTENTS) {
-  doSend(INTENTS[key], rest[0], rest.slice(1).join(' ').trim());
+  // --broadcast is the deliberate opt-in for a message that must reach everyone;
+  // strip it so it never leaks into the message body.
+  const args = rest.filter((a) => a !== '--broadcast');
+  const broadcastOk = args.length !== rest.length;
+  doSend(INTENTS[key], args[0], args.slice(1).join(' ').trim(), broadcastOk);
 } else if (key === 'status') {
   const text = rest.join(' ').trim();
   if (text) {

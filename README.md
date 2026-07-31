@@ -74,11 +74,20 @@ From inside any Claude Code session (the agent runs these via Bash; you can too)
 
 `<tab>` is matched by exact name → substring → session-id prefix.
 
-**Broadcast scope.** `all` (and `*`, `@all`) reaches only sessions **in the sender's project** (nearest `.git` root) — so a broadcast never wakes sessions in unrelated repos. Other forms:
+**Broadcasts are refused by default.** `all`, `everyone`, `proj:<name>`, `*`, `@all` — and any target that
+resolves to more than `FANOUT_LIMIT` (2) recipients — exit 1 with instructions instead of sending. A broadcast
+lands in every peer's inbox and wakes each of them mid-task; every woken session re-reads its whole context to
+absorb one FYI, so a single courtesy ping costs more tokens than the work that produced it and derails unrelated
+tasks. Address **one session by its id** (`cc-msg who` shows who is working on what), or don't send at all —
+a note nobody asked for belongs in the project `CLAUDE.md` or the commit message.
 
-- `cc-msg send everyone "..."` — every live session, across all projects (rare; use sparingly).
-- `cc-msg send proj:<name> "..."` — every session whose project (git-root basename) matches `<name>`.
-- Addressing one session by its id always works, across projects.
+To override for something genuinely everyone-affecting (shared build red, API contract or schema changed under
+them), add `--broadcast`:
+
+- `cc-msg send all --broadcast "..."` — sessions **in the sender's project** only (nearest `.git` root).
+- `cc-msg send everyone --broadcast "..."` — every live session, across all projects (essentially never).
+- `cc-msg send proj:<name> --broadcast "..."` — every session whose project (git-root basename) matches `<name>`.
+- Addressing one session by its id always works, across projects, and needs no flag.
 
 The **status board** injected on each prompt is likewise scoped to same-project peers, and only re-appears when a peer's name/status/mid-change flag actually changes (not on every heartbeat).
 

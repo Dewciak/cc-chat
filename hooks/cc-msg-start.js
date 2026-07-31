@@ -77,7 +77,11 @@ const codexCtx =
   `WRITE (send) freely:\n` +
   `  cc-msg who                     see what every tab is working on\n` +
   `  cc-msg status "..."            publish what YOU are working on\n` +
-  `  cc-msg send/ask/fix/done <tab> "..."   message a tab (by id) or "all"\n` +
+  `  cc-msg send/ask/fix/done <id> "..."    message ONE tab, addressed by its id\n` +
+  `NEVER broadcast: "all"/"everyone" is blocked by the CLI (needs --broadcast). It wakes every peer mid-task and\n` +
+  `makes each of them re-read its whole context for one FYI. Run cc-msg who, pick the ONE tab that is affected, and\n` +
+  `message that id. If no specific tab needs it, do not send it — put it in the project CLAUDE.md or commit message.\n` +
+  `Only use --broadcast when you broke/changed something SHARED (build, API contract, schema) that hits everyone now.\n` +
   `\n` +
   `READ ON DEMAND — messages do NOT arrive automatically for Codex (to save tokens):\n` +
   `  cc-msg inbox                   print messages sent to you since you last checked\n` +
@@ -128,7 +132,17 @@ const claudeCtx =
   `with a message; handle it, then RE-ARM \`cc-msg watch\` in the background again. When you spawn the peer,\n` +
   `pass \`cc-msg spawn --watch "<prompt>"\` — it seeds the peer to arm its own watcher and coordinate with you.\n` +
   `\n` +
-  `Broadcast scope: "all" reaches ONLY tabs in YOUR project (same git repo) — it will NOT wake Claude tabs in other projects. To address one specific tab anywhere, use its id (cross-project is allowed). To deliberately broadcast across EVERY project, use "everyone" (rare — avoid it, it interrupts unrelated work).\n` +
+  `HARD RULE — NEVER BROADCAST. Address ONE tab by its id. "all" / "everyone" / "proj:x" are BLOCKED by the CLI\n` +
+  `(exit 1) and stay blocked unless you add --broadcast. Reason: a broadcast lands in every peer's inbox and wakes\n` +
+  `each of them mid-task; every woken tab re-reads its whole context to absorb one FYI, so a single "heads up" costs\n` +
+  `more tokens than the work that produced it and derails unrelated tasks. Before sending ANYTHING: run cc-msg who,\n` +
+  `pick the tab(s) whose current focus actually covers it (usually exactly one), and message that id. If no specific\n` +
+  `tab needs it, DO NOT SEND IT — a note nobody asked for belongs in the project CLAUDE.md or the commit message,\n` +
+  `not on the bus. Refactor notes, "I touched file X", status updates, FYIs and courtesy pings are NEVER broadcasts\n` +
+  `(your status is already on the board via cc-msg status — that costs nobody anything).\n` +
+  `The ONLY case for --broadcast: you just broke or changed something SHARED that every live tab in the project will\n` +
+  `hit within minutes (build/types red, API contract or DB schema changed under them). Even then, prefer cc-msg busy.\n` +
+  `Scope, when you do use it: "all" = tabs in YOUR project only; "everyone" = every project (essentially never).\n` +
   `\n` +
   `When YOU need a change in a PEER's project (match the paths above), SIZE IT before acting — a peer owning a repo does NOT make it off-limits, and delegating or spawning a specialist for a small change is waste. Default to fixing it yourself; delegate only when the change is genuinely heavy.\n` +
   `  • SIMPLE & low-risk (small/obvious edit, copy/style/config tweak, known area, no cross-side contract change) → JUST MAKE IT YOURSELF. First run cc-msg who: if a live peer's focus covers that file/area, coordinate first (or hand it over with cc-msg fix) so you don't clobber active work; otherwise edit it and note it with cc-msg send <tab> so they stay aware.\n` +
